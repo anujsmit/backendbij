@@ -1,0 +1,1 @@
+ALTER TABLE "service_requests" ADD COLUMN "assigned_at" timestamp with time zone;

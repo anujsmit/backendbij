@@ -1,0 +1,1 @@
+ALTER TYPE "public"."sms_type" ADD VALUE 'mistri_approved';

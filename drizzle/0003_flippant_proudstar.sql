@@ -1,0 +1,2 @@
+ALTER TABLE "service_requests" ADD COLUMN "assigned_mistri_id" uuid;--> statement-breakpoint
+ALTER TABLE "service_requests" ADD CONSTRAINT "service_requests_assigned_mistri_id_users_id_fk" FOREIGN KEY ("assigned_mistri_id") REFERENCES "public"."users"("id") ON DELETE set null ON UPDATE no action;

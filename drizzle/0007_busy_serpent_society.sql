@@ -1,0 +1,1 @@
+ALTER TABLE "service_requests" ALTER COLUMN "type" SET DATA TYPE varchar(100);
