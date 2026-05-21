@@ -16,6 +16,8 @@ function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     return R * c;
 }
+console.log("SUPABASE_URL:", process.env.SUPABASE_URL);
+console.log("SUPABASE_KEY:", process.env.SUPABASE_SERVICE_KEY);
 
 const supabase = createClient(
     process.env.SUPABASE_URL!,

@@ -21,12 +21,15 @@ export const serviceRequestStatusEnum = pgEnum("service_request_status", ["pendi
 export const availabilityStatusEnum = pgEnum("availability_status", ["available", "unavailable", "on_work_available"]);
 export const mistriApprovalStatusEnum = pgEnum("mistri_approval_status", ["pending", "approved", "rejected"]);
 
+
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   phoneNumber: varchar("phone_number", { length: 20 }).unique().notNull(),
   fullName: varchar("full_name", { length: 255 }).notNull(),
-  role: userRoleEnum("role"), // No default - user must explicitly choose role
+  password: varchar("password", { length: 255 }).notNull(), // Added password field
+  role: userRoleEnum("role"), 
   isActive: boolean("is_active").default(true).notNull(),
+  isVerified: boolean("is_verified").default(false).notNull(), // Added verification flag
   deviceToken: text("device_token"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

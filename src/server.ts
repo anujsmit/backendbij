@@ -1,3 +1,5 @@
+import dotenv from "dotenv";
+dotenv.config();
 import express from "express";
 import "dotenv/config";
 import cors from "cors";
@@ -15,6 +17,7 @@ import notificationPreferencesRoutes from "./routes/notificationPreferences";
 import adminRoutes from "./routes/admin";
 import heroBannerRoutes from "./routes/heroBanners";
 import { networkInterfaces } from "os";
+
 
 const app = express();
 const port = process.env.PORT || 3000;
