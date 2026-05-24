@@ -91,10 +91,10 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
  * Collects full profile details up front. Saves user with isVerified = false.
  */
 export const register = async (req: Request, res: Response) => {
-    const { phone, fullName, password, role } = req.body;
+    const { phone, fullName, password, dob, role } = req.body;
 
-    if (!phone || !fullName || !password) {
-        return res.status(400).json({ message: "Phone number, full name, and password are required" });
+    if (!phone || !fullName || !password|| !dob) {
+        return res.status(400).json({ message: "All fields are required" });
     }
 
     const cleanPhone = phone.replace(/\s+/g, '');
@@ -108,7 +108,7 @@ export const register = async (req: Request, res: Response) => {
             if (existingUser.isVerified) {
                 return res.status(400).json({ message: "This phone number is already registered" });
             }
-            
+
             // If user exists but was never verified, update details and allow a re-attempt
             const hashedPassword = await bcrypt.hash(password, 10);
             await db.update(users).set({
@@ -120,13 +120,15 @@ export const register = async (req: Request, res: Response) => {
         } else {
             // New user registration
             const hashedPassword = await bcrypt.hash(password, 10);
+
             await db.insert(users).values({
                 phoneNumber: cleanPhone,
                 fullName,
                 password: hashedPassword,
+                dob: new Date(dob),
                 role: role || null,
                 isVerified: false,
-                isOnboarded: false
+                isOnboarded: false,
             });
         }
 
@@ -138,9 +140,9 @@ export const register = async (req: Request, res: Response) => {
             console.log(`📱 Registration Development OTP for ${cleanPhone}: ${otp}`);
         }
 
-        return res.status(201).json({ 
-            success: true, 
-            message: "Account details registered. Please verify using the OTP sent." 
+        return res.status(201).json({
+            success: true,
+            message: "Account details registered. Please verify using the OTP sent."
         });
 
     } catch (error) {
@@ -206,7 +208,7 @@ export const verifyOtp = async (req: Request, res: Response) => {
             refreshToken: tokens.refreshToken,
             expiresAt: tokens.expiresAt,
             token: tokens.accessToken,
-            user: { 
+            user: {
                 id: user.id,
                 phoneNumber: user.phoneNumber,
                 fullName: user.fullName,
@@ -248,9 +250,9 @@ export const loginWithPassword = async (req: Request, res: Response) => {
             // Re-trigger an OTP push if they are attempting access with an unverified shell account
             const otp = await createOtp(cleanPhone);
             console.log(`📱 Unverified login attempt. Code pushed to ${cleanPhone}: ${otp}`);
-            return res.status(403).json({ 
-                message: "Account not verified. A verification code has been sent to your phone.", 
-                isVerified: false 
+            return res.status(403).json({
+                message: "Account not verified. A verification code has been sent to your phone.",
+                isVerified: false
             });
         }
 
@@ -691,7 +693,7 @@ export const verifyAccountDeletion = async (req: Request, res: Response) => {
         if (!otp) {
             return res.status(400).json({ message: "OTP is required" });
         }
-        
+
         const currentUser = await db.query.users.findFirst({
             where: eq(users.id, userId),
         });

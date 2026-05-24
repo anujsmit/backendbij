@@ -1,7 +1,13 @@
 import express from "express";
+
 import { authenticate } from "../middleware/auth";
 import { requireAdmin } from "../middleware/requireAdmin";
-import { adminSendOtp, adminVerifyOtp, adminLogout } from "../controllers/adminAuthController";
+
+import {
+    adminLogin,
+    adminLogout,
+} from "../controllers/adminAuthController";
+
 import {
     getAdminStats,
     getUsers,
@@ -19,6 +25,7 @@ import {
     getSmsStats,
     getSmsLogs,
 } from "../controllers/adminController";
+
 import {
     getAllServiceCategories,
     createServiceCategory,
@@ -28,11 +35,13 @@ import {
     updatePlatformService,
     deletePlatformService,
 } from "../controllers/adminServiceController";
+
 import {
     getAdminRatings,
     approveRating,
     rejectRating,
 } from "../controllers/adminRatingController";
+
 import {
     getAdminHeroBanners,
     createHeroBanner,
@@ -40,69 +49,186 @@ import {
     deleteHeroBanner,
     reorderHeroBanners,
 } from "../controllers/heroBannerController";
+
 import { uploadAsset } from "../controllers/uploadController";
 
 const router = express.Router();
 
-// Public admin auth routes — no token required
-router.post("/auth/send-otp", adminSendOtp);
-router.post("/auth/verify-otp", adminVerifyOtp);
+/**
+ * PUBLIC ADMIN AUTH ROUTES
+ */
+
+router.post("/auth/login", adminLogin);
+
 router.post("/auth/logout", adminLogout);
 
-// All routes below require authentication + admin role
+/**
+ * ALL ROUTES BELOW REQUIRE ADMIN AUTH
+ */
+
 router.use(authenticate, requireAdmin);
 
-// Dashboard
+/**
+ * DASHBOARD
+ */
+
 router.get("/stats", getAdminStats);
 
-// Users
+/**
+ * USERS
+ */
+
 router.get("/users", getUsers);
+
 router.get("/users/:id", getUserById);
+
 router.patch("/users/:id", updateUser);
+
 router.patch("/users/:id/toggle-active", toggleUserActive);
 
-// Mistris (counts before list path — explicit segment)
+/**
+ * MISTRIS
+ */
+
 router.get("/mistris/counts", getMistrisCounts);
+
 router.get("/mistris", getMistris);
-router.patch("/mistris/:userId/toggle-featured", toggleMistriFeatured);
-router.patch("/mistris/:userId/update-service", updateMistriService);
-router.patch("/mistris/:userId/approve", approveMistri);
-router.patch("/mistris/:userId/reject", rejectMistri);
 
-// Service Categories
-router.get("/service-categories", getAllServiceCategories);
-router.post("/service-categories", createServiceCategory);
-router.patch("/service-categories/:id", updateServiceCategory);
+router.patch(
+    "/mistris/:userId/toggle-featured",
+    toggleMistriFeatured
+);
 
-// Platform Services
-router.get("/platform-services", getAllPlatformServices);
-router.post("/platform-services", createPlatformService);
-router.patch("/platform-services/:id", updatePlatformService);
-router.delete("/platform-services/:id", deletePlatformService);
+router.patch(
+    "/mistris/:userId/update-service",
+    updateMistriService
+);
 
-// CDN Asset Upload
+router.patch(
+    "/mistris/:userId/approve",
+    approveMistri
+);
+
+router.patch(
+    "/mistris/:userId/reject",
+    rejectMistri
+);
+
+/**
+ * SERVICE CATEGORIES
+ */
+
+router.get(
+    "/service-categories",
+    getAllServiceCategories
+);
+
+router.post(
+    "/service-categories",
+    createServiceCategory
+);
+
+router.patch(
+    "/service-categories/:id",
+    updateServiceCategory
+);
+
+/**
+ * PLATFORM SERVICES
+ */
+
+router.get(
+    "/platform-services",
+    getAllPlatformServices
+);
+
+router.post(
+    "/platform-services",
+    createPlatformService
+);
+
+router.patch(
+    "/platform-services/:id",
+    updatePlatformService
+);
+
+router.delete(
+    "/platform-services/:id",
+    deletePlatformService
+);
+
+/**
+ * CDN ASSET UPLOAD
+ */
+
 router.post("/upload", uploadAsset);
 
-// Hero Banners
-router.get("/hero-banners", getAdminHeroBanners);
-router.post("/hero-banners", createHeroBanner);
-router.patch("/hero-banners/reorder", reorderHeroBanners);
-router.patch("/hero-banners/:id", updateHeroBanner);
-router.delete("/hero-banners/:id", deleteHeroBanner);
+/**
+ * HERO BANNERS
+ */
 
-// Ratings
+router.get(
+    "/hero-banners",
+    getAdminHeroBanners
+);
+
+router.post(
+    "/hero-banners",
+    createHeroBanner
+);
+
+router.patch(
+    "/hero-banners/reorder",
+    reorderHeroBanners
+);
+
+router.patch(
+    "/hero-banners/:id",
+    updateHeroBanner
+);
+
+router.delete(
+    "/hero-banners/:id",
+    deleteHeroBanner
+);
+
+/**
+ * RATINGS
+ */
+
 router.get("/ratings", getAdminRatings);
-router.post("/ratings/:id/approve", approveRating);
-router.post("/ratings/:id/reject", rejectRating);
 
-// Service Requests (monitoring)
-router.get("/service-requests", getAdminServiceRequests);
+router.post(
+    "/ratings/:id/approve",
+    approveRating
+);
 
-// Audit Logs
+router.post(
+    "/ratings/:id/reject",
+    rejectRating
+);
+
+/**
+ * SERVICE REQUESTS
+ */
+
+router.get(
+    "/service-requests",
+    getAdminServiceRequests
+);
+
+/**
+ * AUDIT LOGS
+ */
+
 router.get("/audit-logs", getAuditLogs);
 
-// SMS
+/**
+ * SMS
+ */
+
 router.get("/sms-stats", getSmsStats);
+
 router.get("/sms-logs", getSmsLogs);
 
 export default router;

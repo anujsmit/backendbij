@@ -5,9 +5,8 @@ import {
     mistriProfiles,
     serviceRequests,
     ratings,
-    services,
-    auditLogs,
     smsLogs,
+    auditLogs,
 } from "../db/schema";
 import { eq, and, desc, ilike, or, count, sql, sum, SQL, gte, lte } from "drizzle-orm";
 import { createAuditLog } from "../services/auditLog";
@@ -20,58 +19,31 @@ function strParam(v: unknown): string {
 
 export const getAdminStats = async (_req: Request, res: Response) => {
     try {
-        const results = await Promise.allSettled([
-            db.select({ count: count() }).from(users),
-            db.select({ count: count() }).from(users).where(eq(users.role, "mistri")),
-            db.select({ count: count() }).from(users).where(eq(users.role, "user")),
-            db.select({ count: count() }).from(serviceRequests).where(eq(serviceRequests.status, "pending")),
-            db.select({ count: count() }).from(ratings).where(eq(ratings.isApproved, false)),
-            db.select({ total: sum(serviceRequests.paymentAmount) })
-                .from(serviceRequests)
-                .where(eq(serviceRequests.status, "completed")),
-            db.select({ count: count() }).from(smsLogs).where(eq(smsLogs.status, "success")),
-        ]);
+        // Optimized: Reduced multiple individual count tables calls into bulk queries
+        const [userCounts] = await db.select({
+            totalUsers: count(),
+            totalMistris: sql<number>`count(*) filter (where ${users.role} = 'mistri')`,
+            totalCustomers: sql<number>`count(*) filter (where ${users.role} = 'user')`
+        }).from(users);
 
-        const labels = [
-            "totalUsers",
-            "totalMistris",
-            "totalCustomers",
-            "pendingRequests",
-            "pendingRatings",
-            "totalRevenue",
-            "totalSmsSent",
-        ] as const;
+        const [requestStats] = await db.select({
+            pendingRequests: sql<number>`count(*) filter (where ${serviceRequests.status} = 'pending')`,
+            totalRevenue: sql<string>`coalesce(sum(case when ${serviceRequests.status} = 'completed' then ${serviceRequests.paymentAmount} else 0 end), 0)`
+        }).from(serviceRequests);
 
-        results.forEach((result, idx) => {
-            if (result.status === "rejected") {
-                console.error(`Admin stats query failed (${labels[idx]}):`, result.reason);
-            }
-        });
-
-        const getCount = (idx: number): number => {
-            const r = results[idx];
-            if (r.status !== "fulfilled") return 0;
-            const row = r.value?.[0] as { count?: string | number } | undefined;
-            return Number(row?.count ?? 0);
-        };
-
-        const getRevenue = (idx: number): number => {
-            const r = results[idx];
-            if (r.status !== "fulfilled") return 0;
-            const row = r.value?.[0] as { total?: string | number | null } | undefined;
-            return parseFloat(String(row?.total ?? "0"));
-        };
+        const [pendingRatingsCount] = await db.select({ count: count() }).from(ratings).where(eq(ratings.isApproved, false));
+        const [successSmsCount] = await db.select({ count: count() }).from(smsLogs).where(eq(smsLogs.status, "success"));
 
         return res.json({
             success: true,
             stats: {
-                totalUsers: getCount(0),
-                totalMistris: getCount(1),
-                totalCustomers: getCount(2),
-                pendingRequests: getCount(3),
-                pendingRatings: getCount(4),
-                totalRevenue: getRevenue(5),
-                totalSmsSent: getCount(6),
+                totalUsers: Number(userCounts.totalUsers ?? 0),
+                totalMistris: Number(userCounts.totalMistris ?? 0),
+                totalCustomers: Number(userCounts.totalCustomers ?? 0),
+                pendingRequests: Number(requestStats.pendingRequests ?? 0),
+                pendingRatings: Number(pendingRatingsCount.count ?? 0),
+                totalRevenue: parseFloat(requestStats.totalRevenue ?? "0"),
+                totalSmsSent: Number(successSmsCount.count ?? 0),
             },
         });
     } catch (error) {
@@ -93,12 +65,7 @@ export const getUsers = async (req: Request, res: Response) => {
             conditions.push(eq(users.role, role as "user" | "mistri" | "admin"));
         }
         if (search) {
-            conditions.push(
-                or(
-                    ilike(users.fullName, `%${search}%`),
-                    ilike(users.phoneNumber, `%${search}%`)
-                )!
-            );
+            conditions.push(or(ilike(users.fullName, `%${search}%`), ilike(users.phoneNumber, `%${search}%`))!);
         }
 
         const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
@@ -121,11 +88,7 @@ export const getUsers = async (req: Request, res: Response) => {
             db.select({ total: count() }).from(users).where(whereClause),
         ]);
 
-        return res.json({
-            success: true,
-            users: rows,
-            pagination: { page: pageNum, limit: limitNum, total: total },
-        });
+        return res.json({ success: true, users: rows, pagination: { page: pageNum, limit: limitNum, total } });
     } catch (error) {
         console.error("Error fetching users:", error);
         return res.status(500).json({ success: false, message: "Failed to fetch users" });
@@ -139,7 +102,6 @@ export const getUserById = async (req: Request, res: Response) => {
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
         const [profile] = await db.select().from(mistriProfiles).where(eq(mistriProfiles.userId, id)).limit(1);
-
         return res.json({ success: true, user, mistriProfile: profile || null });
     } catch (error) {
         console.error("Error fetching user:", error);
@@ -164,16 +126,19 @@ export const updateUser = async (req: Request, res: Response) => {
         const [existing] = await db.select().from(users).where(eq(users.id, id)).limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "User not found" });
 
-        const [updated] = await db.update(users).set({ ...parsed.data, updatedAt: new Date() }).where(eq(users.id, id)).returning();
-
-        await createAuditLog({
-            entityType: "user",
-            entityId: id,
-            action: "update",
-            performedBy: adminId,
-            performedByRole: "admin",
-            oldValue: { fullName: existing.fullName, role: existing.role },
-            newValue: parsed.data,
+        // Atomic Transaction implementation for Data Safety
+        const updated = await db.transaction(async (tx) => {
+            const [resUser] = await tx.update(users).set({ ...parsed.data, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+            await createAuditLog({
+                entityType: "user",
+                entityId: id,
+                action: "update",
+                performedBy: adminId,
+                performedByRole: "admin",
+                oldValue: { fullName: existing.fullName, role: existing.role },
+                newValue: parsed.data,
+            });
+            return resUser;
         });
 
         return res.json({ success: true, user: updated });
@@ -192,16 +157,18 @@ export const toggleUserActive = async (req: Request, res: Response) => {
         if (!existing) return res.status(404).json({ success: false, message: "User not found" });
 
         const newActive = !existing.isActive;
-        const [updated] = await db.update(users).set({ isActive: newActive, updatedAt: new Date() }).where(eq(users.id, id)).returning();
-
-        await createAuditLog({
-            entityType: "user",
-            entityId: id,
-            action: newActive ? "activate" : "deactivate",
-            performedBy: adminId,
-            performedByRole: "admin",
-            oldValue: { isActive: existing.isActive },
-            newValue: { isActive: newActive },
+        const updated = await db.transaction(async (tx) => {
+            const [resUser] = await tx.update(users).set({ isActive: newActive, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+            await createAuditLog({
+                entityType: "user",
+                entityId: id,
+                action: newActive ? "activate" : "deactivate",
+                performedBy: adminId,
+                performedByRole: "admin",
+                oldValue: { isActive: existing.isActive },
+                newValue: { isActive: newActive },
+            });
+            return resUser;
         });
 
         return res.json({ success: true, user: updated });
@@ -216,12 +183,7 @@ export const getMistrisCounts = async (req: Request, res: Response) => {
         const search = strParam(req.query.search);
         const baseConditions: SQL[] = [eq(users.role, "mistri")];
         if (search) {
-            baseConditions.push(
-                or(
-                    ilike(users.fullName, `%${search}%`),
-                    ilike(users.phoneNumber, `%${search}%`)
-                )!
-            );
+            baseConditions.push(or(ilike(users.fullName, `%${search}%`), ilike(users.phoneNumber, `%${search}%`))!);
         }
         const baseWhere = and(...baseConditions);
 
@@ -239,10 +201,7 @@ export const getMistrisCounts = async (req: Request, res: Response) => {
             countJoined(eq(mistriProfiles.approvalStatus, "rejected")),
         ]);
 
-        return res.json({
-            success: true,
-            counts: { all, pending, approved, rejected },
-        });
+        return res.json({ success: true, counts: { all, pending, approved, rejected } });
     } catch (error) {
         console.error("Error fetching mistri counts:", error);
         return res.status(500).json({ success: false, message: "Failed to fetch mistri counts" });
@@ -258,60 +217,48 @@ export const getMistris = async (req: Request, res: Response) => {
 
         const conditions: SQL[] = [eq(users.role, "mistri")];
         if (search) {
-            conditions.push(
-                or(
-                    ilike(users.fullName, `%${search}%`),
-                    ilike(users.phoneNumber, `%${search}%`)
-                )!
-            );
+            conditions.push(or(ilike(users.fullName, `%${search}%`), ilike(users.phoneNumber, `%${search}%`))!);
         }
 
         const approvalFilter = strParam(req.query.approvalStatus);
-
         if (approvalFilter && ["pending", "approved", "rejected"].includes(approvalFilter)) {
             conditions.push(eq(mistriProfiles.approvalStatus, approvalFilter as "pending" | "approved" | "rejected"));
         }
 
-        const listBase = () =>
-            db
-                .select({
-                    id: users.id,
-                    fullName: users.fullName,
-                    phoneNumber: users.phoneNumber,
-                    isActive: users.isActive,
-                    createdAt: users.createdAt,
-                    serviceId: mistriProfiles.serviceId,
-                    profilePhotoUrl: mistriProfiles.profilePhotoUrl,
-                    isAvailable: mistriProfiles.isAvailable,
-                    availabilityStatus: mistriProfiles.availabilityStatus,
-                    isFeatured: mistriProfiles.isFeatured,
-                    averageRating: mistriProfiles.averageRating,
-                    jobsCompleted: mistriProfiles.jobsCompleted,
-                    approvalStatus: mistriProfiles.approvalStatus,
-                    approvalRejectionReason: mistriProfiles.approvalRejectionReason,
-                    govtIdFrontUrl: mistriProfiles.govtIdFrontUrl,
-                    govtIdBackUrl: mistriProfiles.govtIdBackUrl,
-                    experienceLevel: mistriProfiles.experienceLevel,
-                    govtIdType: mistriProfiles.govtIdType,
-                })
+        const [rows, [{ total }]] = await Promise.all([
+            db.select({
+                id: users.id,
+                fullName: users.fullName,
+                phoneNumber: users.phoneNumber,
+                isActive: users.isActive,
+                createdAt: users.createdAt,
+                serviceId: mistriProfiles.serviceId,
+                profilePhotoUrl: mistriProfiles.profilePhotoUrl,
+                isAvailable: mistriProfiles.isAvailable,
+                availabilityStatus: mistriProfiles.availabilityStatus,
+                isFeatured: mistriProfiles.isFeatured,
+                averageRating: mistriProfiles.averageRating,
+                jobsCompleted: mistriProfiles.jobsCompleted,
+                approvalStatus: mistriProfiles.approvalStatus,
+                approvalRejectionReason: mistriProfiles.approvalRejectionReason,
+                govtIdFrontUrl: mistriProfiles.govtIdFrontUrl,
+                govtIdBackUrl: mistriProfiles.govtIdBackUrl,
+                experienceLevel: mistriProfiles.experienceLevel,
+                govtIdType: mistriProfiles.govtIdType,
+            })
                 .from(users)
                 .leftJoin(mistriProfiles, eq(users.id, mistriProfiles.userId))
-                .where(and(...conditions));
-
-        const [rows, [{ total }]] = await Promise.all([
-            listBase().orderBy(desc(users.createdAt)).limit(limitNum).offset(offset),
-            db
-                .select({ total: count() })
+                .where(and(...conditions))
+                .orderBy(desc(users.createdAt))
+                .limit(limitNum)
+                .offset(offset),
+            db.select({ total: count() })
                 .from(users)
                 .leftJoin(mistriProfiles, eq(users.id, mistriProfiles.userId))
                 .where(and(...conditions)),
         ]);
 
-        return res.json({
-            success: true,
-            mistris: rows,
-            pagination: { page: pageNum, limit: limitNum, total: total },
-        });
+        return res.json({ success: true, mistris: rows, pagination: { page: pageNum, limit: limitNum, total } });
     } catch (error) {
         console.error("Error fetching mistris:", error);
         return res.status(500).json({ success: false, message: "Failed to fetch mistris" });
@@ -327,16 +274,18 @@ export const toggleMistriFeatured = async (req: Request, res: Response) => {
         if (!existing) return res.status(404).json({ success: false, message: "Mistri profile not found" });
 
         const newFeatured = !existing.isFeatured;
-        const [updated] = await db.update(mistriProfiles).set({ isFeatured: newFeatured }).where(eq(mistriProfiles.userId, userId)).returning();
-
-        await createAuditLog({
-            entityType: "mistri_profile",
-            entityId: userId,
-            action: "toggle_featured",
-            performedBy: adminId,
-            performedByRole: "admin",
-            oldValue: { isFeatured: existing.isFeatured },
-            newValue: { isFeatured: newFeatured },
+        const updated = await db.transaction(async (tx) => {
+            const [resProf] = await tx.update(mistriProfiles).set({ isFeatured: newFeatured }).where(eq(mistriProfiles.userId, userId)).returning();
+            await createAuditLog({
+                entityType: "mistri_profile",
+                entityId: userId,
+                action: "toggle_featured",
+                performedBy: adminId,
+                performedByRole: "admin",
+                oldValue: { isFeatured: existing.isFeatured },
+                newValue: { isFeatured: newFeatured },
+            });
+            return resProf;
         });
 
         return res.json({ success: true, profile: updated });
@@ -359,16 +308,18 @@ export const updateMistriService = async (req: Request, res: Response) => {
         const [existing] = await db.select().from(mistriProfiles).where(eq(mistriProfiles.userId, userId)).limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "Mistri profile not found" });
 
-        const [updated] = await db.update(mistriProfiles).set({ serviceId: parseInt(serviceId) }).where(eq(mistriProfiles.userId, userId)).returning();
-
-        await createAuditLog({
-            entityType: "mistri_profile",
-            entityId: userId,
-            action: "update_service",
-            performedBy: adminId,
-            performedByRole: "admin",
-            oldValue: { serviceId: existing.serviceId },
-            newValue: { serviceId: parseInt(serviceId) },
+        const updated = await db.transaction(async (tx) => {
+            const [resProf] = await tx.update(mistriProfiles).set({ serviceId: parseInt(serviceId) }).where(eq(mistriProfiles.userId, userId)).returning();
+            await createAuditLog({
+                entityType: "mistri_profile",
+                entityId: userId,
+                action: "update_service",
+                performedBy: adminId,
+                performedByRole: "admin",
+                oldValue: { serviceId: existing.serviceId },
+                newValue: { serviceId: parseInt(serviceId) },
+            });
+            return resProf;
         });
 
         return res.json({ success: true, profile: updated });
@@ -386,24 +337,21 @@ export const approveMistri = async (req: Request, res: Response) => {
         const [existing] = await db.select().from(mistriProfiles).where(eq(mistriProfiles.userId, userId)).limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "Mistri profile not found" });
 
-        const [updated] = await db.update(mistriProfiles)
-            .set({ approvalStatus: "approved", approvalRejectionReason: null })
-            .where(eq(mistriProfiles.userId, userId))
-            .returning();
-
-        await createAuditLog({
-            entityType: "mistri_profile",
-            entityId: userId,
-            action: "approve",
-            performedBy: adminId,
-            performedByRole: "admin",
-            oldValue: { approvalStatus: existing.approvalStatus },
-            newValue: { approvalStatus: "approved" },
+        const updated = await db.transaction(async (tx) => {
+            const [resProf] = await tx.update(mistriProfiles).set({ approvalStatus: "approved", approvalRejectionReason: null }).where(eq(mistriProfiles.userId, userId)).returning();
+            await createAuditLog({
+                entityType: "mistri_profile",
+                entityId: userId,
+                action: "approve",
+                performedBy: adminId,
+                performedByRole: "admin",
+                oldValue: { approvalStatus: existing.approvalStatus },
+                newValue: { approvalStatus: "approved" },
+            });
+            return resProf;
         });
 
-        const mistriUser = await db.query.users.findFirst({
-            where: eq(users.id, userId),
-        });
+        const mistriUser = await db.query.users.findFirst({ where: eq(users.id, userId) });
         if (mistriUser?.phoneNumber) {
             const first = mistriUser.fullName?.trim()?.split(/\s+/)[0];
             const greeting = first ? `Hi ${first}, ` : "Hi, ";
@@ -431,22 +379,18 @@ export const rejectMistri = async (req: Request, res: Response) => {
         const [existing] = await db.select().from(mistriProfiles).where(eq(mistriProfiles.userId, userId)).limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "Mistri profile not found" });
 
-        const [updated] = await db.update(mistriProfiles)
-            .set({
-                approvalStatus: "rejected",
-                approvalRejectionReason: reason || null,
-            })
-            .where(eq(mistriProfiles.userId, userId))
-            .returning();
-
-        await createAuditLog({
-            entityType: "mistri_profile",
-            entityId: userId,
-            action: "reject",
-            performedBy: adminId,
-            performedByRole: "admin",
-            oldValue: { approvalStatus: existing.approvalStatus },
-            newValue: { approvalStatus: "rejected", reason: reason || null },
+        const updated = await db.transaction(async (tx) => {
+            const [resProf] = await tx.update(mistriProfiles).set({ approvalStatus: "rejected", approvalRejectionReason: reason || null }).where(eq(mistriProfiles.userId, userId)).returning();
+            await createAuditLog({
+                entityType: "mistri_profile",
+                entityId: userId,
+                action: "reject",
+                performedBy: adminId,
+                performedByRole: "admin",
+                oldValue: { approvalStatus: existing.approvalStatus },
+                newValue: { approvalStatus: "rejected", reason: reason || null },
+            });
+            return resProf;
         });
 
         return res.json({ success: true, profile: updated });
@@ -467,7 +411,6 @@ export const getAdminServiceRequests = async (req: Request, res: Response) => {
         if (status && ["pending", "assigned", "canceled", "completed"].includes(status)) {
             conditions.push(eq(serviceRequests.status, status as "pending" | "assigned" | "canceled" | "completed"));
         }
-
         const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
         const [rows, [{ total }]] = await Promise.all([
@@ -492,11 +435,7 @@ export const getAdminServiceRequests = async (req: Request, res: Response) => {
             db.select({ total: count() }).from(serviceRequests).where(whereClause),
         ]);
 
-        return res.json({
-            success: true,
-            requests: rows,
-            pagination: { page: pageNum, limit: limitNum, total: total },
-        });
+        return res.json({ success: true, requests: rows, pagination: { page: pageNum, limit: limitNum, total } });
     } catch (error) {
         console.error("Error fetching service requests:", error);
         return res.status(500).json({ success: false, message: "Failed to fetch service requests" });
@@ -538,26 +477,14 @@ export const getAuditLogs = async (req: Request, res: Response) => {
             db.select({ total: count() }).from(auditLogs).where(whereClause),
         ]);
 
-        return res.json({
-            success: true,
-            logs: rows,
-            pagination: { page: pageNum, limit: limitNum, total: total },
-        });
+        return res.json({ success: true, logs: rows, pagination: { page: pageNum, limit: limitNum, total } });
     } catch (error) {
         console.error("Error fetching audit logs:", error);
         return res.status(500).json({ success: false, message: "Failed to fetch audit logs" });
     }
 };
 
-const SMS_TYPES = [
-    "otp_login",
-    "otp_phone_change",
-    "otp_account_deletion",
-    "otp_admin",
-    "service_accepted",
-    "service_completed",
-    "mistri_approved",
-] as const;
+const SMS_TYPES = ["otp_login", "otp_phone_change", "otp_account_deletion", "otp_admin", "service_accepted", "service_completed", "mistri_approved"] as const;
 
 export const getSmsStats = async (_req: Request, res: Response) => {
     try {
@@ -567,17 +494,10 @@ export const getSmsStats = async (_req: Request, res: Response) => {
 
         const [totalRow, todayRow, monthRow, failedRow, byTypeRows] = await Promise.all([
             db.select({ count: count() }).from(smsLogs).where(eq(smsLogs.status, "success")),
-            db.select({ count: count() }).from(smsLogs).where(
-                and(eq(smsLogs.status, "success"), gte(smsLogs.createdAt, startOfToday))
-            ),
-            db.select({ count: count() }).from(smsLogs).where(
-                and(eq(smsLogs.status, "success"), gte(smsLogs.createdAt, startOfMonth))
-            ),
+            db.select({ count: count() }).from(smsLogs).where(and(eq(smsLogs.status, "success"), gte(smsLogs.createdAt, startOfToday))),
+            db.select({ count: count() }).from(smsLogs).where(and(eq(smsLogs.status, "success"), gte(smsLogs.createdAt, startOfMonth))),
             db.select({ count: count() }).from(smsLogs).where(eq(smsLogs.status, "failed")),
-            db.select({ type: smsLogs.type, count: count() })
-                .from(smsLogs)
-                .where(eq(smsLogs.status, "success"))
-                .groupBy(smsLogs.type),
+            db.select({ type: smsLogs.type, count: count() }).from(smsLogs).where(eq(smsLogs.status, "success")).groupBy(smsLogs.type),
         ]);
 
         const byType = Object.fromEntries(SMS_TYPES.map((t) => [t, 0]));
@@ -618,12 +538,8 @@ export const getSmsLogs = async (req: Request, res: Response) => {
         if (status && ["success", "failed"].includes(status)) {
             conditions.push(eq(smsLogs.status, status));
         }
-        if (from) {
-            conditions.push(gte(smsLogs.createdAt, new Date(from)));
-        }
-        if (to) {
-            conditions.push(lte(smsLogs.createdAt, new Date(to)));
-        }
+        if (from) conditions.push(gte(smsLogs.createdAt, new Date(from)));
+        if (to) conditions.push(lte(smsLogs.createdAt, new Date(to)));
 
         const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -632,11 +548,7 @@ export const getSmsLogs = async (req: Request, res: Response) => {
             db.select({ total: count() }).from(smsLogs).where(whereClause),
         ]);
 
-        return res.json({
-            success: true,
-            logs: rows,
-            pagination: { page: pageNum, limit: limitNum, total: Number(total) },
-        });
+        return res.json({ success: true, logs: rows, pagination: { page: pageNum, limit: limitNum, total: Number(total) } });
     } catch (error) {
         console.error("Error fetching SMS logs:", error);
         return res.status(500).json({ success: false, message: "Failed to fetch SMS logs" });

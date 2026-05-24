@@ -27,9 +27,10 @@ export const users = pgTable("users", {
   phoneNumber: varchar("phone_number", { length: 20 }).unique().notNull(),
   fullName: varchar("full_name", { length: 255 }).notNull(),
   password: varchar("password", { length: 255 }).notNull(), // Added password field
+  dob: timestamp("dob", { mode: "date" }).notNull(),
   role: userRoleEnum("role"), 
   isActive: boolean("is_active").default(true).notNull(),
-  isVerified: boolean("is_verified").default(false).notNull(), // Added verification flag
+  isVerified: boolean("is_verified").default(false).notNull(),
   deviceToken: text("device_token"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
