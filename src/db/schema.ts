@@ -21,16 +21,12 @@ export const serviceRequestStatusEnum = pgEnum("service_request_status", ["pendi
 export const availabilityStatusEnum = pgEnum("availability_status", ["available", "unavailable", "on_work_available"]);
 export const mistriApprovalStatusEnum = pgEnum("mistri_approval_status", ["pending", "approved", "rejected"]);
 
-
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   phoneNumber: varchar("phone_number", { length: 20 }).unique().notNull(),
   fullName: varchar("full_name", { length: 255 }).notNull(),
-  password: varchar("password", { length: 255 }).notNull(), // Added password field
-  dob: timestamp("dob", { mode: "date" }).notNull(),
-  role: userRoleEnum("role"), 
+  role: userRoleEnum("role"), // No default - user must explicitly choose role
   isActive: boolean("is_active").default(true).notNull(),
-  isVerified: boolean("is_verified").default(false).notNull(),
   deviceToken: text("device_token"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -93,6 +89,7 @@ export const serviceRequests = pgTable("service_requests", {
   unpaid: boolean("unpaid").default(false).notNull(),
   paymentAmount: decimal("payment_amount", { precision: 10, scale: 2 }), // Actual payment amount (calculated from services)
   paidAt: timestamp("paid_at", { withTimezone: true }), // When marked as paid
+  payoutId: uuid("payout_id"), // FK -> payouts.id; set when this job's commission is included in a settlement (prevents double-settle)
 });
 
 export const notifications = pgTable("notifications", {
@@ -262,6 +259,56 @@ export const smsLogs = pgTable("sms_logs", {
   createdAtIdx: index("sms_logs_created_at_idx").on(table.createdAt),
 }));
 
+// Business operating expenses recorded by admin (rent, salaries, marketing, etc.)
+// Category is a curated varchar set (validated in the app) — kept flexible to avoid enum migrations.
+export const expenses = pgTable("expenses", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  title: varchar("title", { length: 255 }).notNull(),
+  category: varchar("category", { length: 40 }).default("misc").notNull(),
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(), // NPR
+  paidTo: varchar("paid_to", { length: 255 }), // vendor / payee
+  paymentMethod: varchar("payment_method", { length: 30 }), // cash | bank | wallet | online
+  note: text("note"),
+  incurredAt: timestamp("incurred_at", { withTimezone: true }).defaultNow().notNull(), // business date of the expense
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  categoryIdx: index("expenses_category_idx").on(table.category),
+  incurredAtIdx: index("expenses_incurred_at_idx").on(table.incurredAt),
+  createdAtIdx: index("expenses_created_at_idx").on(table.createdAt),
+}));
+
+// Platform key/value settings (e.g. commission_rate). Small, app-managed.
+export const appSettings = pgTable("app_settings", {
+  key: varchar("key", { length: 64 }).primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Provider commission settlements. In ServeX's cash flow the mistri collects the
+// full job amount and OWES the platform its commission; a payout batches a set of
+// completed+paid jobs and records the commission the platform collects from them.
+export const payouts = pgTable("payouts", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  mistriId: uuid("mistri_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  jobsCount: integer("jobs_count").notNull(),
+  grossAmount: decimal("gross_amount", { precision: 12, scale: 2 }).notNull(), // sum of job payment amounts
+  commissionRate: decimal("commission_rate", { precision: 5, scale: 2 }).notNull(), // % snapshot at settlement time
+  commissionAmount: decimal("commission_amount", { precision: 12, scale: 2 }).notNull(), // platform's cut (collected from mistri)
+  netAmount: decimal("net_amount", { precision: 12, scale: 2 }).notNull(), // gross - commission (mistri keeps this)
+  status: varchar("status", { length: 20 }).default("pending").notNull(), // 'pending' | 'collected'
+  note: text("note"),
+  periodEnd: timestamp("period_end", { withTimezone: true }), // latest job paidAt included
+  settledAt: timestamp("settled_at", { withTimezone: true }), // when marked collected
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  mistriIdIdx: index("payouts_mistri_id_idx").on(table.mistriId),
+  statusIdx: index("payouts_status_idx").on(table.status),
+  createdAtIdx: index("payouts_created_at_idx").on(table.createdAt),
+}));
+
 // Notification preferences for users
 export const notificationPreferences = pgTable("notification_preferences", {
   userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
@@ -273,3 +320,26 @@ export const notificationPreferences = pgTable("notification_preferences", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
+// Admin-panel team members (RBAC). An "employee" is a users row with
+// role='admin' PLUS this profile carrying their staff role + permission set.
+// An admin WITHOUT a profile is treated as super-admin (legacy full access).
+export const staffRoleEnum = pgEnum("staff_role", [
+  "super_admin",
+  "manager",
+  "dispatcher",
+  "support",
+  "finance",
+]);
+
+export const employeeProfiles = pgTable("employee_profiles", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  staffRole: staffRoleEnum("staff_role").default("support").notNull(),
+  permissions: jsonb("permissions").$type<string[]>().default([]).notNull(), // explicit permission keys; ['*'] = all
+  designation: varchar("designation", { length: 100 }), // optional job title
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  staffRoleIdx: index("employee_profiles_staff_role_idx").on(table.staffRole),
+}));

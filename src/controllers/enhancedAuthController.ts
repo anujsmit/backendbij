@@ -6,15 +6,10 @@ import { users, refreshTokens, phoneChangeAttempts, mistriProfiles } from "../db
 import { eq, and, gt, gte, sql } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import { randomBytes } from "crypto";
-import bcrypt from "bcryptjs";
 
 const ACCESS_TOKEN_EXPIRY = '1h';
 const REFRESH_TOKEN_EXPIRY = '30d';
 const MAX_PHONE_CHANGES_PER_DAY = 5;
-
-// ============================================
-// HELPER FUNCTIONS
-// ============================================
 
 const generateTokens = async (userId: string) => {
     const now = Math.floor(Date.now() / 1000);
@@ -41,10 +36,6 @@ const generateTokens = async (userId: string) => {
     };
 };
 
-// ============================================
-// MIDDLEWARE
-// ============================================
-
 export const authenticateToken = async (req: Request, res: Response, next: NextFunction) => {
     const authHeader = req.headers.authorization;
     const token = authHeader && authHeader.split(' ')[1];
@@ -68,120 +59,60 @@ export const authenticateToken = async (req: Request, res: Response, next: NextF
             return res.status(404).json({ message: "User not found or deleted" });
         }
 
-        if (!user.isVerified) {
-            return res.status(403).json({ message: "Account verification required" });
-        }
-
         (req as any).user = { userId: decoded.userId };
         next();
     } catch (error) {
         if (error instanceof jwt.TokenExpiredError) {
             return res.status(401).json({ message: "Token expired" });
         }
+
         return res.status(403).json({ message: "Invalid token" });
     }
 };
 
-// ============================================
-// CORE AUTH CONTROLLERS (SIGNUP, VERIFY, LOGIN)
-// ============================================
+export const sendOtp = async (req: Request, res: Response) => {
+    const { phone } = req.body;
 
-/**
- * 1. SIGNUP / REGISTER
- * Collects full profile details up front. Saves user with isVerified = false.
- */
-export const register = async (req: Request, res: Response) => {
-    const { phone, fullName, password, dob, role } = req.body;
+    console.log('Send OTP request received:', { phone, type: typeof phone });
 
-    if (!phone || !fullName || !password|| !dob) {
-        return res.status(400).json({ message: "All fields are required" });
+    if (!phone) {
+        return res.status(400).json({ message: "Phone number is required" });
     }
 
-    const cleanPhone = phone.replace(/\s+/g, '');
-
     try {
-        const existingUser = await db.query.users.findFirst({
-            where: eq(users.phoneNumber, cleanPhone),
-        });
-
-        if (existingUser) {
-            if (existingUser.isVerified) {
-                return res.status(400).json({ message: "This phone number is already registered" });
-            }
-
-            // If user exists but was never verified, update details and allow a re-attempt
-            const hashedPassword = await bcrypt.hash(password, 10);
-            await db.update(users).set({
-                fullName,
-                password: hashedPassword,
-                role: role || null,
-                updatedAt: new Date()
-            }).where(eq(users.id, existingUser.id));
-        } else {
-            // New user registration
-            const hashedPassword = await bcrypt.hash(password, 10);
-
-            await db.insert(users).values({
-                phoneNumber: cleanPhone,
-                fullName,
-                password: hashedPassword,
-                dob: new Date(dob),
-                role: role || null,
-                isVerified: false,
-                isOnboarded: false,
-            });
-        }
-
-        // Fire off confirmation OTP code
-        const otp = await createOtp(cleanPhone);
+        const otp = await createOtp(phone);
         if (process.env.NODE_ENV === 'production') {
-            await sendSms(cleanPhone, `SERVEX: Your verification OTP is: ${otp}.`, "otp_login");
+            await sendSms(phone, `SERVEX: Your ServeX OTP is: ${otp}. Never share this OTP with anyone.`, "otp_login");
         } else {
-            console.log(`📱 Registration Development OTP for ${cleanPhone}: ${otp}`);
+            console.log(`📱 Development OTP for ${phone}: ${otp}`);
         }
-
-        return res.status(201).json({
-            success: true,
-            message: "Account details registered. Please verify using the OTP sent."
-        });
-
+        res.status(200).json({ message: "OTP sent successfully" });
     } catch (error) {
-        console.error("Registration error:", error);
-        return res.status(500).json({ message: "Failed to create user account" });
+        console.error(error);
+        res.status(500).json({ message: "Failed to send OTP" });
     }
 };
 
-/**
- * 2. VERIFY OTP
- * Validates the OTP. If valid, changes status to isVerified = true.
- */
 export const verifyOtp = async (req: Request, res: Response) => {
     const { phone, otp } = req.body;
+
+    console.log('Verify OTP request received:', { phone, otp, phoneType: typeof phone, otpType: typeof otp });
 
     if (!phone || !otp) {
         return res.status(400).json({ message: "Phone number and OTP are required" });
     }
 
-    const cleanPhone = phone.replace(/\s+/g, '');
-
     try {
-        await verifyOtpService(cleanPhone, otp);
+        await verifyOtpService(phone, otp);
+
+        const cleanPhone = phone.replace(/\s+/g, '');
 
         let user = await db.query.users.findFirst({
             where: eq(users.phoneNumber, cleanPhone),
         });
 
         if (!user) {
-            return res.status(404).json({ message: "Account records not found" });
-        }
-
-        // Set verification statuses to true upon correct entry
-        if (!user.isVerified) {
-            const updatedUsers = await db.update(users)
-                .set({ isVerified: true, isActive: true })
-                .where(eq(users.id, user.id))
-                .returning();
-            user = updatedUsers[0];
+            user = (await db.insert(users).values({ phoneNumber: cleanPhone, fullName: "" }).returning())[0];
         }
 
         const tokens = await generateTokens(user.id);
@@ -203,109 +134,18 @@ export const verifyOtp = async (req: Request, res: Response) => {
             }
         }
 
-        return res.status(200).json({
+        res.status(200).json({
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
             expiresAt: tokens.expiresAt,
             token: tokens.accessToken,
-            user: {
-                id: user.id,
-                phoneNumber: user.phoneNumber,
-                fullName: user.fullName,
-                role: user.role,
-                isVerified: user.isVerified,
-                approvalStatus,
-                approvalRejectionReason
-            },
+            user: { ...user, approvalStatus, approvalRejectionReason },
         });
     } catch (error) {
         console.error(error);
-        return res.status(400).json({ message: "Invalid or expired OTP" });
+        res.status(400).json({ message: "Invalid or expired OTP" });
     }
 };
-
-/**
- * 3. LOGIN WITH PASSWORD
- * Secure login method checking the encrypted password.
- */
-export const loginWithPassword = async (req: Request, res: Response) => {
-    const { phone, password } = req.body;
-
-    if (!phone || !password) {
-        return res.status(400).json({ message: "Phone number and password are required" });
-    }
-
-    const cleanPhone = phone.replace(/\s+/g, '');
-
-    try {
-        const user = await db.query.users.findFirst({
-            where: eq(users.phoneNumber, cleanPhone),
-        });
-
-        if (!user) {
-            return res.status(401).json({ message: "Invalid phone number or password" });
-        }
-
-        if (!user.isVerified) {
-            // Re-trigger an OTP push if they are attempting access with an unverified shell account
-            const otp = await createOtp(cleanPhone);
-            console.log(`📱 Unverified login attempt. Code pushed to ${cleanPhone}: ${otp}`);
-            return res.status(403).json({
-                message: "Account not verified. A verification code has been sent to your phone.",
-                isVerified: false
-            });
-        }
-
-        const isPasswordMatch = await bcrypt.compare(password, user.password);
-        if (!isPasswordMatch) {
-            return res.status(401).json({ message: "Invalid phone number or password" });
-        }
-
-        const tokens = await generateTokens(user.id);
-        return res.status(200).json({
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken,
-            expiresAt: tokens.expiresAt,
-            user: {
-                id: user.id,
-                fullName: user.fullName,
-                phoneNumber: user.phoneNumber,
-                role: user.role
-            }
-        });
-    } catch (error) {
-        console.error(error);
-        return res.status(500).json({ message: "An error occurred during verification" });
-    }
-};
-
-/**
- * 4. OPTIONAL SMS REQUEST (For password changes/explicit triggers)
- */
-export const sendOtp = async (req: Request, res: Response) => {
-    const { phone } = req.body;
-
-    if (!phone) {
-        return res.status(400).json({ message: "Phone number is required" });
-    }
-
-    try {
-        const otp = await createOtp(phone);
-        if (process.env.NODE_ENV === 'production') {
-            await sendSms(phone, `SERVEX: Your ServeX OTP is: ${otp}. Never share this OTP with anyone.`, "otp_login");
-        } else {
-            console.log(`📱 Development OTP for ${phone}: ${otp}`);
-        }
-        res.status(200).json({ message: "OTP sent successfully" });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: "Failed to send OTP" });
-    }
-};
-
-// ============================================
-// PROFILE & ACCOUNT MANAGEMENT (AUTHORIZED)
-// ============================================
 
 export const getMe = async (req: Request, res: Response) => {
     try {
@@ -406,10 +246,6 @@ export const updateProfile = async (req: Request, res: Response) => {
     }
 };
 
-// ============================================
-// REFRESH & LOGOUT
-// ============================================
-
 export const refreshToken = async (req: Request, res: Response) => {
     const { refreshToken: refreshTokenValue } = req.body;
 
@@ -465,10 +301,6 @@ export const logout = async (req: Request, res: Response) => {
     res.status(200).json({ message: "Successfully logged out" });
 };
 
-// ============================================
-// ADVANCED SECURITY OPERATIONS
-// ============================================
-
 export const requestPhoneChange = async (req: Request, res: Response) => {
     try {
         const userId = (req as any).user?.userId;
@@ -482,6 +314,7 @@ export const requestPhoneChange = async (req: Request, res: Response) => {
             return res.status(400).json({ message: "New phone number is required" });
         }
 
+        // Get current user
         const currentUser = await db.query.users.findFirst({
             where: eq(users.id, userId),
         });
@@ -490,6 +323,7 @@ export const requestPhoneChange = async (req: Request, res: Response) => {
             return res.status(404).json({ message: "User not found" });
         }
 
+        // Check rate limit - count successful changes in last 24 hours
         const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
         const recentChanges = await db
             .select({ count: sql<number>`count(*)::int` })
@@ -519,7 +353,7 @@ export const requestPhoneChange = async (req: Request, res: Response) => {
 
         if (existingUser.length > 0 && existingUser[0].id !== userId) {
             return res.status(400).json({
-                message: "This phone number is already registered with another account."
+                message: "This phone number is already registered with another account. Please use a different number or contact support if you believe this is an error."
             });
         }
 
@@ -553,6 +387,7 @@ export const verifyPhoneChange = async (req: Request, res: Response) => {
             return res.status(400).json({ message: "Phone number and OTP are required" });
         }
 
+        // Get current user
         const currentUser = await db.query.users.findFirst({
             where: eq(users.id, userId),
         });
@@ -564,6 +399,7 @@ export const verifyPhoneChange = async (req: Request, res: Response) => {
         const isValid = await verifyOtpService(newPhoneNumber, otp);
 
         if (!isValid) {
+            // Record failed attempt
             await db.insert(phoneChangeAttempts).values({
                 userId,
                 oldPhoneNumber: currentUser.phoneNumber,
@@ -582,7 +418,7 @@ export const verifyPhoneChange = async (req: Request, res: Response) => {
 
         if (existingUser.length > 0 && existingUser[0].id !== userId) {
             return res.status(400).json({
-                message: "This phone number is already registered with another account."
+                message: "This phone number is already registered with another account. Please use a different number or contact support if you believe this is an error."
             });
         }
 
@@ -592,6 +428,7 @@ export const verifyPhoneChange = async (req: Request, res: Response) => {
             .where(eq(users.id, userId))
             .returning();
 
+        // Record successful attempt
         await db.insert(phoneChangeAttempts).values({
             userId,
             oldPhoneNumber: currentUser.phoneNumber,
@@ -628,6 +465,7 @@ export const registerDeviceToken = async (req: Request, res: Response) => {
             return res.status(400).json({ message: "Valid device token is required" });
         }
 
+        // Update user's device token
         const [updatedUser] = await db
             .update(users)
             .set({ deviceToken })
@@ -637,6 +475,8 @@ export const registerDeviceToken = async (req: Request, res: Response) => {
         if (!updatedUser) {
             return res.status(404).json({ message: "User not found" });
         }
+
+        console.log(`Device token registered for user ${userId}: ${deviceToken.substring(0, 20)}...`);
 
         res.status(200).json({
             message: "Device token registered successfully",
@@ -656,6 +496,7 @@ export const requestAccountDeletion = async (req: Request, res: Response) => {
             return res.status(401).json({ message: "Unauthorized" });
         }
 
+        // Get current user
         const currentUser = await db.query.users.findFirst({
             where: eq(users.id, userId),
         });
@@ -664,9 +505,10 @@ export const requestAccountDeletion = async (req: Request, res: Response) => {
             return res.status(404).json({ message: "User not found" });
         }
 
+        // Send OTP to user's phone number
         const otp = await createOtp(currentUser.phoneNumber);
         if (process.env.NODE_ENV === 'production') {
-            await sendSms(currentUser.phoneNumber, `SERVEX: Your OTP for account deletion is: ${otp}.`, "otp_account_deletion");
+            await sendSms(currentUser.phoneNumber, `SERVEX: Your OTP for account deletion is: ${otp}. If you did not request this, please ignore this message.`, "otp_account_deletion");
         } else {
             console.log(`📱 Development OTP for account deletion (${currentUser.phoneNumber}): ${otp}`);
         }
@@ -693,7 +535,6 @@ export const verifyAccountDeletion = async (req: Request, res: Response) => {
         if (!otp) {
             return res.status(400).json({ message: "OTP is required" });
         }
-
         const currentUser = await db.query.users.findFirst({
             where: eq(users.id, userId),
         });
@@ -709,8 +550,12 @@ export const verifyAccountDeletion = async (req: Request, res: Response) => {
         }
 
         await db.delete(refreshTokens).where(eq(refreshTokens.userId, userId));
+
         await db.delete(phoneChangeAttempts).where(eq(phoneChangeAttempts.userId, userId));
+
         await db.delete(users).where(eq(users.id, userId));
+
+        console.log(`Account deleted for user ${userId}`);
 
         res.status(200).json({
             message: "Account deleted successfully"

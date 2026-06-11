@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from "express";
-import { createOtp, verifyOtp as verifyOtpService } from "../services/otp";
+import { createOtp, verifyOtp as verifyOtpService, isReviewAccount } from "../services/otp";
 import { sendSms } from "../services/sms";
 import { db } from "../db";
 import { users, mistriProfiles } from "../db/schema";
@@ -42,6 +42,10 @@ export const sendOtp = async (req: Request, res: Response) => {
   }
 
   try {
+    // Store-review demo accounts: no SMS sent; verifyOtp accepts a fixed code.
+    if (isReviewAccount(phone)) {
+      return res.status(200).json({ message: "OTP sent successfully" });
+    }
     const otp = await createOtp(phone);
     if (process.env.NODE_ENV === 'production') {
       await sendSms(phone, `SERVEX: Your ServeX OTP is: ${otp}. Never share this OTP with anyone.`, "otp_login");

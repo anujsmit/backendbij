@@ -2,8 +2,9 @@ import { Request, Response } from "express";
 import { db } from "../db";
 import { users } from "../db/schema";
 import { eq } from "drizzle-orm";
+import { createOtp, verifyOtp as verifyOtpService } from "../services/otp";
+import { sendSms } from "../services/sms";
 import jwt from "jsonwebtoken";
-import bcrypt from "bcryptjs";
 
 const ADMIN_TOKEN_COOKIE = "admin_token";
 
@@ -13,7 +14,6 @@ function getAdminCookieDomain(): string | undefined {
 
 function isHttpsRequest(req: Request): boolean {
     const forwardedProto = req.headers["x-forwarded-proto"];
-
     const proto = Array.isArray(forwardedProto)
         ? forwardedProto[0]
         : forwardedProto?.split(",")[0]?.trim();
@@ -21,126 +21,115 @@ function isHttpsRequest(req: Request): boolean {
     return req.secure || proto === "https";
 }
 
-/**
- * ADMIN LOGIN WITH PHONE + PASSWORD
- */
-export const adminLogin = async (req: Request, res: Response) => {
-    try {
-        const { phone, password } = req.body;
+export const adminSendOtp = async (req: Request, res: Response) => {
+    const { phone } = req.body;
 
-        if (!phone || !password) {
-            return res.status(400).json({
-                success: false,
-                message: "Phone number and password are required",
-            });
-        }
+    if (!phone) {
+        return res.status(400).json({ success: false, message: "Phone number is required" });
+    }
 
-        const cleanPhone = String(phone).replace(/\s+/g, "");
+    const cleanPhone = String(phone).replace(/\s+/g, "");
 
-        const user = await db.query.users.findFirst({
-            where: eq(users.phoneNumber, cleanPhone),
-        });
+    const user = await db.query.users.findFirst({
+        where: eq(users.phoneNumber, cleanPhone),
+    });
 
-        if (!user || user.role !== "admin") {
-            return res.status(401).json({
-                success: false,
-                message: "Invalid phone number or password",
-            });
-        }
-
-        if (!user.isActive) {
-            return res.status(403).json({
-                success: false,
-                message: "Account is disabled",
-            });
-        }
-
-        /**
-         * PASSWORD CHECK
-         * assumes password field exists in DB
-         */
-        const isPasswordValid = await bcrypt.compare(
-            password,
-            user.password
-        );
-
-        if (!isPasswordValid) {
-            return res.status(401).json({
-                success: false,
-                message: "Invalid phone number or password",
-            });
-        }
-
-        const secret = process.env.JWT_SECRET;
-
-        if (!secret) {
-            return res.status(500).json({
-                success: false,
-                message: "Server configuration error",
-            });
-        }
-
-        const accessToken = jwt.sign(
-            {
-                userId: user.id,
-                type: "access",
-            },
-            secret,
-            {
-                expiresIn: "1h",
-            }
-        );
-
-        const useSecureCookie = isHttpsRequest(req);
-
-        const cookieDomain = getAdminCookieDomain();
-
-        res.cookie(ADMIN_TOKEN_COOKIE, accessToken, {
-            httpOnly: true,
-            secure: useSecureCookie,
-            sameSite: "strict",
-            domain: cookieDomain,
-            path: "/",
-            maxAge: 60 * 60 * 1000,
-        });
-
-        return res.status(200).json({
-            success: true,
-            message:"login sucessfull",
-            token: accessToken,
-            user: {
-                id: user.id,
-                fullName: user.fullName,
-                phoneNumber: user.phoneNumber,
-                role: user.role,
-            },
-        });
-    } catch (error) {
-        console.error("Admin login error:", error);
-
-        return res.status(500).json({
+    if (!user || user.role !== "admin") {
+        return res.status(403).json({
             success: false,
-            message: "Login failed",
+            message: "Unable to send OTP for this account.",
         });
+    }
+
+    if (!user.isActive) {
+        return res.status(403).json({
+            success: false,
+            message: "Unable to send OTP for this account.",
+        });
+    }
+
+    try {
+        // 30-minute window for admin OTP — generous headroom for slow SMS delivery.
+        const otp = await createOtp(cleanPhone, 30 * 60 * 1000);
+        if (process.env.NODE_ENV === "production") {
+            await sendSms(cleanPhone, `SERVEX: Your ServeX Admin OTP is: ${otp}. Never share this code.`, "otp_admin");
+        } else {
+            console.log(`[DEV ADMIN OTP] ${cleanPhone}: ${otp}`);
+        }
+        return res.status(200).json({ success: true, message: "OTP sent successfully" });
+    } catch (error) {
+        console.error("Admin OTP send error:", error);
+        return res.status(500).json({ success: false, message: "Failed to send OTP" });
     }
 };
 
-/**
- * ADMIN LOGOUT
- */
+export const adminVerifyOtp = async (req: Request, res: Response) => {
+    const { phone, otp } = req.body;
+
+    if (!phone || !otp) {
+        return res.status(400).json({ success: false, message: "Phone number and OTP are required" });
+    }
+
+    const cleanPhone = String(phone).replace(/\s+/g, "");
+
+    try {
+        await verifyOtpService(cleanPhone, otp);
+    } catch (error) {
+        if (error instanceof Error && error.message.includes("Too many verification attempts")) {
+            return res.status(429).json({ success: false, message: error.message });
+        }
+        return res.status(400).json({ success: false, message: "Invalid or expired OTP" });
+    }
+
+    const user = await db.query.users.findFirst({
+        where: eq(users.phoneNumber, cleanPhone),
+    });
+
+    if (!user || user.role !== "admin") {
+        return res.status(403).json({ success: false, message: "Admin access denied" });
+    }
+
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+        return res.status(500).json({ success: false, message: "Server configuration error" });
+    }
+
+    const accessToken = jwt.sign({ userId: user.id, type: "access" }, secret, { expiresIn: "1h" });
+
+    const useSecureCookie = isHttpsRequest(req);
+    const cookieDomain = getAdminCookieDomain();
+
+    res.cookie(ADMIN_TOKEN_COOKIE, accessToken, {
+        httpOnly: true,
+        secure: useSecureCookie,
+        sameSite: "lax",
+        domain: cookieDomain,
+        path: "/",
+        maxAge: 60 * 60 * 1000,
+    });
+
+    return res.status(200).json({
+        success: true,
+        ...(process.env.NODE_ENV !== "production" ? { token: accessToken } : {}),
+        user: {
+            id: user.id,
+            fullName: user.fullName,
+            phoneNumber: user.phoneNumber,
+            role: user.role,
+        },
+    });
+};
+
 export const adminLogout = async (req: Request, res: Response) => {
     const cookieDomain = getAdminCookieDomain();
 
     res.clearCookie(ADMIN_TOKEN_COOKIE, {
         httpOnly: true,
         secure: isHttpsRequest(req),
-        sameSite: "strict",
+        sameSite: "lax",
         domain: cookieDomain,
         path: "/",
     });
 
-    return res.status(200).json({
-        success: true,
-        message: "Logged out",
-    });
+    return res.status(200).json({ success: true, message: "Logged out" });
 };

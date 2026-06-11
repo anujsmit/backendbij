@@ -1,19 +1,10 @@
 import express from "express";
-import { 
-    createMistriProfile, 
-    getNearbyMistris, 
-    getTargetedRequests, 
-    getMistriProfile, 
-    updateMistriProfile, 
-    getAcceptedJobs,
-    updateAvailability,
-    getMistriStats
-} from "../controllers/mistriController";
+import { createMistriProfile, getNearbyMistris, getTargetedRequests, getMistriProfile, updateMistriProfile, getAcceptedJobs } from "../controllers/mistriController";
 import { authenticate } from "../middleware/auth";
 
 const router = express.Router();
 
-// POST /api/mistri/profile - Create mistri profile (onboarding)
+// POST /api/mistri/profile - Create mistri profile
 router.post("/profile", authenticate, createMistriProfile);
 
 // GET /api/mistri/profile - Get mistri profile
@@ -30,11 +21,5 @@ router.get("/targeted-requests", authenticate, getTargetedRequests);
 
 // GET /api/mistri/accepted-jobs - Get accepted jobs for this mistri
 router.get("/accepted-jobs", authenticate, getAcceptedJobs);
-
-// PATCH /api/mistri/availability - Update mistri availability
-router.patch("/availability", authenticate, updateAvailability);
-
-// GET /api/mistri/stats - Get mistri statistics
-router.get("/stats", authenticate, getMistriStats);
 
 export default router;
