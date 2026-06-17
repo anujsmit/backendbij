@@ -2,7 +2,18 @@ import express from "express";
 import { authenticate } from "../middleware/auth";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { requirePermission } from "../middleware/requirePermission";
-import { adminSendOtp, adminVerifyOtp, adminLogout } from "../controllers/adminAuthController";
+import { 
+    adminSendOtp, 
+    adminVerifyOtp, 
+    adminLogout,
+    adminLoginWithPassword, 
+    checkAdminTwoFactorStatus
+} from "../controllers/adminAuthController";
+import {
+    setupTwoFactor,
+    enableTwoFactor,
+    disableTwoFactor,
+} from "../controllers/twoFactorController";
 import {
     getMe,
     updateMe,
@@ -38,15 +49,28 @@ import {
     getSmsStats,
     getSmsLogs,
     getGlobalSearch,
+    getMistriJobs,
 } from "../controllers/adminController";
 import {
     getAllServiceCategories,
     createServiceCategory,
     updateServiceCategory,
+    deleteServiceCategory,
+    getServiceCategoryById,
+} from "../controllers/adminServiceController";
+import {
     getAllPlatformServices,
     createPlatformService,
     updatePlatformService,
     deletePlatformService,
+    getPlatformServiceById,
+    getPlatformServicesStats,
+    togglePlatformServiceActive,
+    togglePlatformServicePopular, // ✅ ADD THIS IMPORT
+    bulkDeletePlatformServices,
+    getPlatformServicesByCategory,
+    deactivatePlatformService,
+    reactivatePlatformService,
 } from "../controllers/adminServiceController";
 import {
     getAdminRatings,
@@ -85,35 +109,68 @@ import {
 } from "../controllers/broadcastController";
 import { getBusinessSettings, updateBusinessSettings } from "../controllers/settingsController";
 import { getPnlStatement } from "../controllers/pnlController";
+import {
+    getPendingApprovalRequests,
+    getRequestForAssignment,
+    getAvailableMistrisForAssignment,
+    assignMistriToRequest,
+    rejectPendingRequest,
+    getAllRequests,
+} from "../controllers/adminAssignmentController";
 
 const router = express.Router();
 
-// Public admin auth routes — no token required
+// ============================================
+// PUBLIC ADMIN AUTH ROUTES (no token required)
+// ============================================
+
+// OTP-based login (legacy)
 router.post("/auth/send-otp", adminSendOtp);
 router.post("/auth/verify-otp", adminVerifyOtp);
 router.post("/auth/logout", adminLogout);
 
-// All routes below require authentication + admin role
+// Password-based login with 2FA (new)
+router.post("/auth/login-with-password", adminLoginWithPassword);
+router.post("/auth/check-two-factor-status", checkAdminTwoFactorStatus);
+
+// ============================================
+// PROTECTED ROUTES (authentication + admin role required)
+// ============================================
 router.use(authenticate, requireAdmin);
 
-// Current admin identity + effective permissions (no extra perm — every admin needs it)
+// ============================================
+// 2FA MANAGEMENT (requires authentication)
+// ============================================
+router.post("/two-factor/setup", setupTwoFactor);
+router.post("/two-factor/enable", enableTwoFactor);
+router.post("/two-factor/disable", disableTwoFactor);
+
+// ============================================
+// CURRENT ADMIN IDENTITY
+// ============================================
+
+// Current admin identity + effective permissions
 router.get("/me", getMe);
 router.patch("/me", updateMe);
 
 // Global search (Cmd-K) — any admin; destination pages enforce their own perms
 router.get("/search", getGlobalSearch);
 
-// Business / platform settings
+// ============================================
+// BUSINESS / PLATFORM SETTINGS
+// ============================================
 router.get("/business-settings", requirePermission("settings.view"), getBusinessSettings);
 router.patch("/business-settings", requirePermission("settings.manage"), updateBusinessSettings);
 
-// Dashboard
+// ============================================
+// DASHBOARD & ANALYTICS
+// ============================================
 router.get("/stats", requirePermission("dashboard.view"), getAdminStats);
-
-// Analytics & insights (extends the dashboard — same view permission)
 router.get("/analytics", requirePermission("dashboard.view"), getAnalytics);
 
-// Users
+// ============================================
+// USER MANAGEMENT
+// ============================================
 router.get("/users", requirePermission("users.view"), getUsers);
 router.post("/users", requirePermission("users.manage"), createUser);
 router.get("/users/:id", requirePermission("users.view"), getUserById);
@@ -123,7 +180,10 @@ router.get("/users/:id/detail", requirePermission("users.view"), getCustomerDeta
 router.patch("/users/:id/flag", requirePermission("users.manage"), flagUser);
 router.post("/users/:id/message", requirePermission("users.manage"), messageUser);
 
-// Mistris (counts before list path — explicit segment)
+// ============================================
+// MISTRI (PROVIDER) MANAGEMENT
+// ============================================
+router.get("/mistri-jobs/:id", requirePermission("requests.view"), getMistriJobs);
 router.get("/mistris/counts", requirePermission("mistris.view"), getMistrisCounts);
 router.get("/mistris", requirePermission("mistris.view"), getMistris);
 router.post("/mistris", requirePermission("mistris.manage"), createMistri);
@@ -132,61 +192,102 @@ router.patch("/mistris/:userId/update-service", requirePermission("mistris.manag
 router.patch("/mistris/:userId/approve", requirePermission("mistris.manage"), approveMistri);
 router.patch("/mistris/:userId/reject", requirePermission("mistris.manage"), rejectMistri);
 
-// Service Categories
+// ============================================
+// SERVICE CATEGORIES
+// ============================================
 router.get("/service-categories", requirePermission("services.manage"), getAllServiceCategories);
+router.get("/service-categories/:id", requirePermission("services.manage"), getServiceCategoryById);
 router.post("/service-categories", requirePermission("services.manage"), createServiceCategory);
 router.patch("/service-categories/:id", requirePermission("services.manage"), updateServiceCategory);
+router.delete("/service-categories/:id", requirePermission("services.manage"), deleteServiceCategory);
 
-// Platform Services
+// ============================================
+// PLATFORM SERVICES
+// ============================================
+// GET endpoints
 router.get("/platform-services", requirePermission("services.manage"), getAllPlatformServices);
+router.get("/platform-services/stats", requirePermission("services.manage"), getPlatformServicesStats);
+router.get("/platform-services/:id", requirePermission("services.manage"), getPlatformServiceById);
+router.get("/platform-services/category/:categoryId", requirePermission("services.manage"), getPlatformServicesByCategory);
+
+// POST endpoints
 router.post("/platform-services", requirePermission("services.manage"), createPlatformService);
+router.post("/platform-services/bulk-delete", requirePermission("services.manage"), bulkDeletePlatformServices);
+
+// PATCH endpoints
 router.patch("/platform-services/:id", requirePermission("services.manage"), updatePlatformService);
+router.patch("/platform-services/:id/toggle-active", requirePermission("services.manage"), togglePlatformServiceActive);
+router.patch("/platform-services/:id/toggle-popular", requirePermission("services.manage"), togglePlatformServicePopular); // ✅ ADD THIS ROUTE
+router.patch("/platform-services/:id/deactivate", requirePermission("services.manage"), deactivatePlatformService);
+router.patch("/platform-services/:id/reactivate", requirePermission("services.manage"), reactivatePlatformService);
+
+// DELETE endpoint - PERMANENT DELETE
 router.delete("/platform-services/:id", requirePermission("services.manage"), deletePlatformService);
 
-// CDN Asset Upload (used by services + banners editors)
+// ============================================
+// CDN ASSET UPLOAD
+// ============================================
 router.post("/upload", uploadAsset);
 
-// Hero Banners
+// ============================================
+// HERO BANNERS
+// ============================================
 router.get("/hero-banners", requirePermission("banners.manage"), getAdminHeroBanners);
 router.post("/hero-banners", requirePermission("banners.manage"), createHeroBanner);
 router.patch("/hero-banners/reorder", requirePermission("banners.manage"), reorderHeroBanners);
 router.patch("/hero-banners/:id", requirePermission("banners.manage"), updateHeroBanner);
 router.delete("/hero-banners/:id", requirePermission("banners.manage"), deleteHeroBanner);
 
-// Ratings
+// ============================================
+// RATINGS & REVIEWS
+// ============================================
 router.get("/ratings", requirePermission("ratings.view"), getAdminRatings);
 router.post("/ratings/:id/approve", requirePermission("ratings.moderate"), approveRating);
 router.post("/ratings/:id/reject", requirePermission("ratings.moderate"), rejectRating);
 
-// Service Requests (ops console — monitor, counts, manual assign)
+// ============================================
+// SERVICE REQUESTS (OPS CONSOLE)
+// ============================================
 router.get("/service-requests/counts", requirePermission("requests.view"), getServiceRequestCounts);
 router.get("/service-requests/assignable-mistris", requirePermission("requests.assign"), getAssignableMistris);
 router.get("/service-requests", requirePermission("requests.view"), getAdminServiceRequests);
 router.post("/service-requests/:id/assign", requirePermission("requests.assign"), assignServiceRequest);
 
-// Audit Logs
+// ============================================
+// AUDIT LOGS
+// ============================================
 router.get("/audit-logs", requirePermission("audit.view"), getAuditLogs);
 
-// SMS
+// ============================================
+// SMS MANAGEMENT
+// ============================================
 router.get("/sms-stats", requirePermission("sms.view"), getSmsStats);
 router.get("/sms-logs", requirePermission("sms.view"), getSmsLogs);
 
-// Broadcast (engagement — push / SMS / in-app to segments)
+// ============================================
+// BROADCAST (ENGAGEMENT)
+// ============================================
 router.get("/broadcast/segments", requirePermission("broadcast.send"), getBroadcastSegments);
 router.get("/broadcast/history", requirePermission("broadcast.send"), getBroadcastHistory);
 router.post("/broadcast/send", requirePermission("broadcast.send"), sendBroadcast);
 
-// Expenses (finance — report before list path so the literal segment wins)
+// ============================================
+// EXPENSES (FINANCE)
+// ============================================
 router.get("/expenses/report", requirePermission("expenses.view"), getExpenseReport);
 router.get("/expenses", requirePermission("expenses.view"), getExpenses);
 router.post("/expenses", requirePermission("expenses.manage"), createExpense);
 router.patch("/expenses/:id", requirePermission("expenses.manage"), updateExpense);
 router.delete("/expenses/:id", requirePermission("expenses.manage"), deleteExpense);
 
-// Profit & Loss statement (finance — commission income vs operating expenses)
+// ============================================
+// PROFIT & LOSS STATEMENT
+// ============================================
 router.get("/pnl", requirePermission("expenses.view"), getPnlStatement);
 
-// Payouts (finance — provider commission settlements; specific paths before generic)
+// ============================================
+// PAYOUTS (COMMISSION SETTLEMENTS)
+// ============================================
 router.get("/payouts/report", requirePermission("payouts.view"), getPayoutReport);
 router.get("/payouts/providers", requirePermission("payouts.view"), getPayoutProviders);
 router.get("/payouts", requirePermission("payouts.view"), getPayouts);
@@ -195,12 +296,25 @@ router.patch("/payouts/config", requirePermission("payouts.manage"), updatePayou
 router.patch("/payouts/:id/collect", requirePermission("payouts.manage"), collectPayout);
 router.patch("/payouts/:id/revert", requirePermission("payouts.manage"), revertPayout);
 
-// Employees (RBAC — admin team management)
+// ============================================
+// EMPLOYEES (RBAC - ADMIN TEAM MANAGEMENT)
+// ============================================
 router.get("/employees/roles-meta", requirePermission("employees.view"), getRolesMeta);
 router.get("/employees", requirePermission("employees.view"), getEmployees);
 router.post("/employees", requirePermission("employees.manage"), createEmployee);
 router.patch("/employees/:id", requirePermission("employees.manage"), updateEmployee);
 router.patch("/employees/:id/toggle-active", requirePermission("employees.manage"), toggleEmployeeActive);
 router.delete("/employees/:id", requirePermission("employees.manage"), removeEmployee);
+
+//=====================================
+// Pending Requests Management
+//=====================================
+
+router.get("/pending-requests", requirePermission("requests.view"), getPendingApprovalRequests);
+router.get("/pending-requests/:id", requirePermission("requests.view"), getRequestForAssignment);
+router.get("/available-mistris", requirePermission("requests.view"), getAvailableMistrisForAssignment);
+router.post("/pending-requests/:id/assign", requirePermission("requests.manage"), assignMistriToRequest);
+router.post("/pending-requests/:id/reject", requirePermission("requests.manage"), rejectPendingRequest);
+router.get("/all-requests", requirePermission("requests.view"), getAllRequests);
 
 export default router;

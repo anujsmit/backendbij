@@ -21,7 +21,38 @@ import { z } from "zod";
 function strParam(v: unknown): string {
     return Array.isArray(v) ? String(v[0]) : String(v ?? '');
 }
-
+// Add to adminController.ts
+export const getMistriJobs = async (req: Request, res: Response) => {
+  try {
+    const mistriId = req.params.id;
+    const status = req.query.status as string;
+    
+    const conditions: SQL[] = [
+      eq(serviceRequests.assignedMistriId, mistriId),
+    ];
+    
+    if (status) {
+      conditions.push(eq(serviceRequests.status, status as any));
+    }
+    
+    const jobs = await db
+      .select()
+      .from(serviceRequests)
+      .where(and(...conditions));
+    
+    return res.json({
+      success: true,
+      count: jobs.length,
+      jobs,
+    });
+  } catch (error) {
+    console.error("Error fetching mistri jobs:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch mistri jobs",
+    });
+  }
+};
 export const getAdminStats = async (_req: Request, res: Response) => {
     try {
         const results = await Promise.allSettled([

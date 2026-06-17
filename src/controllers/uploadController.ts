@@ -8,98 +8,112 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_KEY!
 );
 
-const BUCKET = "assets";
-
+// Update the enum to include 'platform-services'
 const uploadSchema = z.object({
     fileBase64: z.string().min(1),
-    folder: z.enum(["banners", "service-categories", "mistri-profiles", "misc"]).optional().default("misc"),
+    folder: z.enum([
+        "banners", 
+        "service-categories", 
+        "service-icons", 
+        "platform-services",  // Add this line
+        "mistri-profiles", 
+        "misc"
+    ]).optional().default("misc"),
     fileName: z.string().optional(),
 });
 
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
-const MAX_IMAGE_DIMENSION = 2000;
-
-function isAllowedImageBuffer(buffer: Buffer): boolean {
-    const isJpeg = buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
-    const isPng =
-        buffer.length >= 8 &&
-        buffer[0] === 0x89 &&
-        buffer[1] === 0x50 &&
-        buffer[2] === 0x4e &&
-        buffer[3] === 0x47 &&
-        buffer[4] === 0x0d &&
-        buffer[5] === 0x0a &&
-        buffer[6] === 0x1a &&
-        buffer[7] === 0x0a;
-
-    return isJpeg || isPng;
-}
-
-async function ensureBucket(): Promise<void> {
-    const { data: buckets } = await supabase.storage.listBuckets();
-    const exists = buckets?.some((b) => b.name === BUCKET);
-    if (!exists) {
-        const { error } = await supabase.storage.createBucket(BUCKET, { public: true });
-        if (error) throw error;
-    }
-}
-
 export const uploadAsset = async (req: Request, res: Response): Promise<Response> => {
     try {
+        console.log('Upload request received');
+        
         const parsed = uploadSchema.safeParse(req.body);
         if (!parsed.success) {
-            return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
-        }
-
-        const { fileBase64, folder, fileName } = parsed.data;
-
-        const rawBuffer = Buffer.from(fileBase64, "base64");
-
-        if (rawBuffer.length === 0 || rawBuffer.length > MAX_UPLOAD_BYTES) {
-            return res.status(413).json({ success: false, message: "File too large. Max size is 5MB." });
-        }
-
-        if (!isAllowedImageBuffer(rawBuffer)) {
-            return res.status(400).json({ success: false, message: "Only JPEG and PNG images are allowed." });
-        }
-
-        const metadata = await sharp(rawBuffer).metadata();
-        if (
-            !metadata.width ||
-            !metadata.height ||
-            metadata.width > MAX_IMAGE_DIMENSION ||
-            metadata.height > MAX_IMAGE_DIMENSION
-        ) {
-            return res.status(400).json({
-                success: false,
-                message: `Image dimensions must be at most ${MAX_IMAGE_DIMENSION}x${MAX_IMAGE_DIMENSION}.`,
+            console.error('Validation error:', parsed.error.format());
+            return res.status(400).json({ 
+                success: false, 
+                message: "Invalid data", 
+                errors: parsed.error.format() 
             });
         }
 
-        const compressed = await sharp(rawBuffer)
-            .resize({ width: 1200, fit: "inside", withoutEnlargement: true })
-            .jpeg({ quality: 80, progressive: true })
-            .toBuffer();
+        const { fileBase64, folder, fileName } = parsed.data;
+        console.log(`Processing upload: folder=${folder}, fileName=${fileName}`);
+        
+        const rawBuffer = Buffer.from(fileBase64, "base64");
+        console.log(`Buffer size: ${rawBuffer.length} bytes`);
+
+        if (rawBuffer.length === 0 || rawBuffer.length > 5 * 1024 * 1024) {
+            return res.status(413).json({ 
+                success: false, 
+                message: "File too large. Max size is 5MB." 
+            });
+        }
+
+        // Compress image - use appropriate format based on file type
+        let compressed: Buffer;
+        let contentType: string;
+        
+        // Check if it's likely an SVG (starts with <svg or xml)
+        const base64String = fileBase64.substring(0, 100);
+        const isSvg = base64String.includes('PHN2Zw') || base64String.includes('xml');
+        
+        if (isSvg) {
+            // For SVG, don't compress with sharp, just decode
+            compressed = rawBuffer;
+            contentType = "image/svg+xml";
+        } else {
+            // For raster images, compress with sharp
+            compressed = await sharp(rawBuffer)
+                .resize({ width: 200, height: 200, fit: "inside", withoutEnlargement: true })
+                .png({ quality: 80, compressionLevel: 8 })
+                .toBuffer();
+            contentType = "image/png";
+        }
+        
+        console.log(`Compressed size: ${compressed.length} bytes, type: ${contentType}`);
 
         const baseName = fileName
             ? fileName.replace(/\.[^/.]+$/, "").replace(/[^a-zA-Z0-9_-]/g, "_")
-            : "asset";
+            : `icon_${Date.now()}`;
 
-        const storagePath = `${folder}/${baseName}_${Date.now()}.jpg`;
+        const extension = isSvg ? 'svg' : 'png';
+        const storagePath = `${folder}/${baseName}_${Date.now()}.${extension}`;
+        console.log(`Storage path: ${storagePath}`);
 
-        await ensureBucket();
+        // Ensure bucket exists
+        const { data: buckets } = await supabase.storage.listBuckets();
+        const bucketExists = buckets?.some((b) => b.name === "assets");
+        
+        if (!bucketExists) {
+            console.log('Creating assets bucket...');
+            await supabase.storage.createBucket("assets", { public: true });
+        }
 
         const { error } = await supabase.storage
-            .from(BUCKET)
-            .upload(storagePath, compressed, { upsert: true, contentType: "image/jpeg" });
+            .from("assets")
+            .upload(storagePath, compressed, { 
+                upsert: true, 
+                contentType: contentType,
+                cacheControl: "3600"
+            });
 
-        if (error) throw error;
+        if (error) {
+            console.error('Supabase upload error:', error);
+            throw error;
+        }
 
-        const { data } = supabase.storage.from(BUCKET).getPublicUrl(storagePath);
+        const { data } = supabase.storage.from("assets").getPublicUrl(storagePath);
+        console.log(`Upload successful: ${data.publicUrl}`);
 
-        return res.status(201).json({ success: true, cdnUrl: data.publicUrl });
+        return res.status(201).json({ 
+            success: true, 
+            cdnUrl: data.publicUrl 
+        });
     } catch (error) {
         console.error("Error uploading asset:", error);
-        return res.status(500).json({ success: false, message: "Failed to upload asset" });
+        return res.status(500).json({ 
+            success: false, 
+            message: error instanceof Error ? error.message : "Failed to upload asset" 
+        });
     }
 };

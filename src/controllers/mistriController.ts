@@ -77,9 +77,29 @@ async function uploadGovtIdImage(
 
 export const createMistriProfile = async (req: Request, res: Response) => {
     try {
-        const userId = (req as any).user.userId;
+        // FIXED: Use req.user.id instead of req.user.userId
+        const userId = req.user?.id;
+        
+        console.log('Create Mistri Profile - User ID:', userId);
+        console.log('Create Mistri Profile - Request body keys:', Object.keys(req.body));
+        
         if (!userId) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ 
+                success: false,
+                message: "Unauthorized. Please login again." 
+            });
+        }
+
+        // Check if user exists
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, userId),
+        });
+
+        if (!user) {
+            return res.status(404).json({ 
+                success: false,
+                message: "User not found" 
+            });
         }
 
         const {
@@ -94,16 +114,43 @@ export const createMistriProfile = async (req: Request, res: Response) => {
             govtIdBackBase64,
         } = req.body;
 
-        if (
-            !serviceId || !profilePhotoBase64 || !currentLocation || !fullName || !bio ||
-            !experienceLevel || !govtIdType || !govtIdFrontBase64 || !govtIdBackBase64
-        ) {
-            return res.status(400).json({ message: "All fields are required" });
+        // Validate required fields
+        const missingFields = [];
+        if (!serviceId) missingFields.push('serviceId');
+        if (!profilePhotoBase64) missingFields.push('profilePhotoBase64');
+        if (!currentLocation) missingFields.push('currentLocation');
+        if (!fullName) missingFields.push('fullName');
+        if (!bio) missingFields.push('bio');
+        if (!experienceLevel) missingFields.push('experienceLevel');
+        if (!govtIdType) missingFields.push('govtIdType');
+        if (!govtIdFrontBase64) missingFields.push('govtIdFrontBase64');
+        if (!govtIdBackBase64) missingFields.push('govtIdBackBase64');
+
+        if (missingFields.length > 0) {
+            return res.status(400).json({ 
+                success: false,
+                message: `Missing required fields: ${missingFields.join(', ')}` 
+            });
         }
 
         const VALID_ID_TYPES = ['citizenship', 'passport', 'pan', 'driving_license'];
         if (!VALID_ID_TYPES.includes(govtIdType)) {
-            return res.status(400).json({ message: "Invalid government ID type" });
+            return res.status(400).json({ 
+                success: false,
+                message: "Invalid government ID type. Allowed: citizenship, passport, pan, driving_license" 
+            });
+        }
+
+        // Check if mistri profile already exists
+        const existingProfile = await db.query.mistriProfiles.findFirst({
+            where: eq(mistriProfiles.userId, userId),
+        });
+
+        if (existingProfile) {
+            return res.status(400).json({ 
+                success: false,
+                message: "Mistri profile already exists for this user" 
+            });
         }
 
         const SERVICE_MAP: Record<number, string> = {
@@ -112,19 +159,37 @@ export const createMistriProfile = async (req: Request, res: Response) => {
         };
         const serviceName = SERVICE_MAP[serviceId];
         if (!serviceName) {
-            return res.status(400).json({ message: "Invalid service ID" });
+            return res.status(400).json({ 
+                success: false,
+                message: "Invalid service ID. Allowed: 1 (plumber), 2 (electrician)" 
+            });
         }
+        
         await db.insert(services)
             .values({ id: serviceId, serviceName })
             .onConflictDoNothing();
 
-        const [profilePhotoUrl, govtIdFrontUrl, govtIdBackUrl] = await Promise.all([
-            compressAndUploadProfileImage(profilePhotoBase64, userId),
-            uploadGovtIdImage(govtIdFrontBase64, 'front', userId),
-            uploadGovtIdImage(govtIdBackBase64, 'back', userId),
-        ]);
+        // Upload images
+        let profilePhotoUrl = null;
+        let govtIdFrontUrl = null;
+        let govtIdBackUrl = null;
 
-        await db.insert(mistriProfiles).values({
+        try {
+            [profilePhotoUrl, govtIdFrontUrl, govtIdBackUrl] = await Promise.all([
+                compressAndUploadProfileImage(profilePhotoBase64, userId),
+                uploadGovtIdImage(govtIdFrontBase64, 'front', userId),
+                uploadGovtIdImage(govtIdBackBase64, 'back', userId),
+            ]);
+        } catch (uploadError) {
+            console.error('Image upload error:', uploadError);
+            return res.status(500).json({ 
+                success: false,
+                message: "Failed to upload images. Please try again." 
+            });
+        }
+
+        // Create mistri profile
+        const [newProfile] = await db.insert(mistriProfiles).values({
             userId,
             serviceId,
             profilePhotoUrl,
@@ -134,18 +199,35 @@ export const createMistriProfile = async (req: Request, res: Response) => {
             govtIdType,
             govtIdFrontUrl,
             govtIdBackUrl,
+            approvalStatus: "pending",
+            isAvailable: true,
+            availabilityStatus: "available",
         }).returning();
 
-        const updatedUsers = await db.update(users)
-            .set({ fullName, isOnboarded: true, onboardingCompletedAt: new Date() })
+        // Update user
+        const [updatedUser] = await db.update(users)
+            .set({ 
+                fullName, 
+                role: "mistri",
+                isOnboarded: true, 
+                onboardingCompletedAt: new Date(),
+                roleSelectedAt: new Date(),
+            })
             .where(eq(users.id, userId))
             .returning();
-        const updatedUser = updatedUsers[0];
 
-        return res.status(200).json({ message: "Profile created successfully", user: updatedUser });
+        return res.status(200).json({ 
+            success: true, 
+            message: "Profile created successfully. Awaiting admin approval.", 
+            profile: newProfile,
+            user: updatedUser
+        });
     } catch (error) {
         console.error('Mistri profile error', error);
-        return res.status(500).json({ message: "Failed to create mistri profile" });
+        return res.status(500).json({ 
+            success: false,
+            message: "Failed to create mistri profile: " + (error as Error).message 
+        });
     }
 };
 
@@ -328,6 +410,7 @@ export const getMistriProfile = async (req: Request, res: Response) => {
                 availabilityStatus: mistriProfiles.availabilityStatus,
                 averageRating: mistriProfiles.averageRating,
                 jobsCompleted: mistriProfiles.jobsCompleted,
+                approvalStatus: mistriProfiles.approvalStatus,
             })
             .from(mistriProfiles)
             .innerJoin(users, eq(mistriProfiles.userId, users.id))
@@ -338,7 +421,7 @@ export const getMistriProfile = async (req: Request, res: Response) => {
         if (profile.length === 0) {
             return res.status(404).json({
                 success: false,
-                message: "Mistri profile not found",
+                message: "Mistri profile not found. Please complete your registration.",
             });
         }
 
@@ -419,7 +502,10 @@ export const updateMistriProfile = async (req: Request, res: Response) => {
         const role = req.user?.role;
 
         if (!userId) {
-            return res.status(401).json({ message: "Unauthorized" });
+            return res.status(401).json({ 
+                success: false,
+                message: "Unauthorized" 
+            });
         }
 
         if (role !== 'mistri') {
@@ -441,7 +527,10 @@ export const updateMistriProfile = async (req: Request, res: Response) => {
             };
             const serviceName = SERVICE_MAP[serviceId];
             if (!serviceName) {
-                return res.status(400).json({ message: "Invalid service ID" });
+                return res.status(400).json({ 
+                    success: false,
+                    message: "Invalid service ID" 
+                });
             }
             await db.insert(services)
                 .values({ id: serviceId, serviceName })
@@ -515,6 +604,9 @@ export const updateMistriProfile = async (req: Request, res: Response) => {
         });
     } catch (error) {
         console.error('Mistri profile update error', error);
-        return res.status(500).json({ message: "Failed to update mistri profile" });
+        return res.status(500).json({ 
+            success: false,
+            message: "Failed to update mistri profile" 
+        });
     }
 };

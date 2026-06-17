@@ -16,16 +16,23 @@ import { sql } from "drizzle-orm";
 
 export const userRoleEnum = pgEnum("user_role", ["user", "mistri", "admin"]);
 export const serviceTypeEnum = pgEnum("service_type", ["electrician", "plumber"]);
-export const locationSourceEnum = pgEnum("location_source", ["gps", "drag"]);
-export const serviceRequestStatusEnum = pgEnum("service_request_status", ["pending", "assigned", "canceled", "completed"]);
+export const locationSourceEnum = pgEnum("location_source", ["gps", "drag", "admin_manual"]);
+// db/schema.ts - Update the enum
+export const serviceRequestStatusEnum = pgEnum("service_request_status", [
+  "pending_approval",
+  "pending", "assigned",
+  "canceled",
+  "completed"
+]);
 export const availabilityStatusEnum = pgEnum("availability_status", ["available", "unavailable", "on_work_available"]);
 export const mistriApprovalStatusEnum = pgEnum("mistri_approval_status", ["pending", "approved", "rejected"]);
 
+// Add to users table definition
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   phoneNumber: varchar("phone_number", { length: 20 }).unique().notNull(),
   fullName: varchar("full_name", { length: 255 }).notNull(),
-  role: userRoleEnum("role"), // No default - user must explicitly choose role
+  role: userRoleEnum("role"),
   isActive: boolean("is_active").default(true).notNull(),
   deviceToken: text("device_token"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -34,8 +41,26 @@ export const users = pgTable("users", {
   onboardingCompletedAt: timestamp("onboarding_completed_at", { withTimezone: true }),
   roleSelectedAt: timestamp("role_selected_at", { withTimezone: true }),
   defaultLocation: text("default_location"),
+  isFlagged: boolean("is_flagged").default(false),
+  flagNote: text("flag_note"),
+  avatarUrl: text("avatar_url"),
+  passwordHash: varchar("password_hash", { length: 255 }),
+  isVerified: boolean("is_verified").default(false).notNull(),
+  dob: varchar("dob", { length: 20 }),
+  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+  twoFaSecret: varchar("two_fa_secret", { length: 255 }),
+  twoFaEnabled: boolean("two_fa_enabled").default(false),
+  twoFaBackupCodes: text("two_fa_backup_codes").array(),
 });
-
+export const loginAttempts = pgTable("login_attempts", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  phoneNumber: varchar("phone_number", { length: 20 }).notNull(),
+  attemptType: varchar("attempt_type", { length: 20 }).notNull(),
+  success: boolean("success").default(false),
+  ipAddress: varchar("ip_address", { length: 45 }),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+});
 export const otps = pgTable("otps", {
   id: serial("id").primaryKey(),
   phone: varchar("phone", { length: 256 }).notNull(),
@@ -49,6 +74,10 @@ export const services = pgTable("services", {
   description: text("description"),
   mapIconColor: varchar("map_icon_color", { length: 7 }),
   isActive: boolean("is_active").default(true).notNull(),
+  iconType: varchar("icon_type", { length: 20 }).default('antd'),
+  iconName: varchar("icon_name", { length: 100 }).default('ToolOutlined'),
+  customIconUrl: text("custom_icon_url"),
+  iconColor: varchar("icon_color", { length: 20 }).default('#1890ff'),
 });
 
 export const mistriProfiles = pgTable("mistri_profiles", {
@@ -70,26 +99,29 @@ export const mistriProfiles = pgTable("mistri_profiles", {
   approvalRejectionReason: text("approval_rejection_reason"),
 });
 
+
 export const serviceRequests = pgTable("service_requests", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   customerId: uuid("customer_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  type: varchar("type", { length: 100 }).notNull(), // Dynamic service type from services table
+  type: varchar("type", { length: 100 }).notNull(),
   lat: decimal("lat", { precision: 10, scale: 6 }).notNull(),
   lng: decimal("lng", { precision: 10, scale: 6 }).notNull(),
   address: text("address").notNull(),
   source: locationSourceEnum("source").notNull(),
   assignedMistriId: uuid("assigned_mistri_id").references(() => users.id, { onDelete: "set null" }),
   status: serviceRequestStatusEnum("status").default("pending").notNull(),
-  customerNotes: text("customer_notes"), // Custom description/notes from customer
-  preferCallExplanation: boolean("prefer_call_explanation").default(false).notNull(), // Customer prefers to explain in call
+  customerNotes: text("customer_notes"),
+  adminNotes: text("admin_notes"), // Add this field
+  scheduledTime: timestamp("scheduled_time", { withTimezone: true }), // Add this field
+  preferCallExplanation: boolean("prefer_call_explanation").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   assignedAt: timestamp("assigned_at", { withTimezone: true }),
-  startedWorkAt: timestamp("started_work_at", { withTimezone: true }), // When mistri actually started working
+  startedWorkAt: timestamp("started_work_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   unpaid: boolean("unpaid").default(false).notNull(),
-  paymentAmount: decimal("payment_amount", { precision: 10, scale: 2 }), // Actual payment amount (calculated from services)
-  paidAt: timestamp("paid_at", { withTimezone: true }), // When marked as paid
-  payoutId: uuid("payout_id"), // FK -> payouts.id; set when this job's commission is included in a settlement (prevents double-settle)
+  paymentAmount: decimal("payment_amount", { precision: 10, scale: 2 }),
+  paidAt: timestamp("paid_at", { withTimezone: true }),
+  payoutId: uuid("payout_id"),
 });
 
 export const notifications = pgTable("notifications", {
@@ -125,21 +157,23 @@ export const phoneChangeAttempts = pgTable("phone_change_attempts", {
   createdAtIdx: index("phone_change_attempts_created_at_idx").on(table.createdAt),
 }));
 
-// Platform-wide pre-defined services with standard pricing
 export const platformServices = pgTable("platform_services", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  serviceId: integer("service_id").notNull().references(() => services.id), // Links to service category (plumber/electrician)
+  serviceId: integer("service_id").notNull().references(() => services.id),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
-  price: decimal("price", { precision: 10, scale: 2 }).notNull(), // Standard platform price in NPR
+  price: decimal("price", { precision: 10, scale: 2 }).notNull(),
   imageUrl: text("image_url"),
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => ({
-  serviceIdIdx: index("platform_services_service_id_idx").on(table.serviceId),
-  isActiveIdx: index("platform_services_is_active_idx").on(table.isActive),
-}));
+  // Additional fields
+  duration_minutes: integer("duration_minutes"),
+  category: varchar("category", { length: 100 }),
+  thumbnail_url: text("thumbnail_url"),
+  isPopular: boolean("is_popular").default(false).notNull(),
+  is_featured: boolean("is_featured").default(false),
+});
 
 // Mistri-specific services (individual services created by each mistri)
 export const mistriServices = pgTable("mistri_services", {
@@ -231,9 +265,13 @@ export const heroBanners = pgTable("hero_banners", {
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  // Add these missing fields
+  adType: varchar("ad_type", { length: 10 }).default('both'),
+  videoUrl: text("video_url"),
 }, (table) => ({
   displayOrderIdx: index("hero_banners_display_order_idx").on(table.displayOrder),
   isActiveIdx: index("hero_banners_is_active_idx").on(table.isActive),
+  adTypeIdx: index("hero_banners_ad_type_idx").on(table.adType),
 }));
 
 // SMS log — one row per outbound SMS sent (or attempted)

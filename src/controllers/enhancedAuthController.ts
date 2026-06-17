@@ -6,6 +6,7 @@ import { users, refreshTokens, phoneChangeAttempts, mistriProfiles } from "../db
 import { eq, and, gt, gte, sql } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import { randomBytes } from "crypto";
+import bcrypt from "bcrypt";
 
 const ACCESS_TOKEN_EXPIRY = '1h';
 const REFRESH_TOKEN_EXPIRY = '30d';
@@ -314,7 +315,6 @@ export const requestPhoneChange = async (req: Request, res: Response) => {
             return res.status(400).json({ message: "New phone number is required" });
         }
 
-        // Get current user
         const currentUser = await db.query.users.findFirst({
             where: eq(users.id, userId),
         });
@@ -323,7 +323,6 @@ export const requestPhoneChange = async (req: Request, res: Response) => {
             return res.status(404).json({ message: "User not found" });
         }
 
-        // Check rate limit - count successful changes in last 24 hours
         const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
         const recentChanges = await db
             .select({ count: sql<number>`count(*)::int` })
@@ -387,7 +386,6 @@ export const verifyPhoneChange = async (req: Request, res: Response) => {
             return res.status(400).json({ message: "Phone number and OTP are required" });
         }
 
-        // Get current user
         const currentUser = await db.query.users.findFirst({
             where: eq(users.id, userId),
         });
@@ -399,7 +397,6 @@ export const verifyPhoneChange = async (req: Request, res: Response) => {
         const isValid = await verifyOtpService(newPhoneNumber, otp);
 
         if (!isValid) {
-            // Record failed attempt
             await db.insert(phoneChangeAttempts).values({
                 userId,
                 oldPhoneNumber: currentUser.phoneNumber,
@@ -428,7 +425,6 @@ export const verifyPhoneChange = async (req: Request, res: Response) => {
             .where(eq(users.id, userId))
             .returning();
 
-        // Record successful attempt
         await db.insert(phoneChangeAttempts).values({
             userId,
             oldPhoneNumber: currentUser.phoneNumber,
@@ -465,7 +461,6 @@ export const registerDeviceToken = async (req: Request, res: Response) => {
             return res.status(400).json({ message: "Valid device token is required" });
         }
 
-        // Update user's device token
         const [updatedUser] = await db
             .update(users)
             .set({ deviceToken })
@@ -496,7 +491,6 @@ export const requestAccountDeletion = async (req: Request, res: Response) => {
             return res.status(401).json({ message: "Unauthorized" });
         }
 
-        // Get current user
         const currentUser = await db.query.users.findFirst({
             where: eq(users.id, userId),
         });
@@ -505,7 +499,6 @@ export const requestAccountDeletion = async (req: Request, res: Response) => {
             return res.status(404).json({ message: "User not found" });
         }
 
-        // Send OTP to user's phone number
         const otp = await createOtp(currentUser.phoneNumber);
         if (process.env.NODE_ENV === 'production') {
             await sendSms(currentUser.phoneNumber, `SERVEX: Your OTP for account deletion is: ${otp}. If you did not request this, please ignore this message.`, "otp_account_deletion");
@@ -563,5 +556,190 @@ export const verifyAccountDeletion = async (req: Request, res: Response) => {
     } catch (error) {
         console.error('Account deletion verification error:', error);
         res.status(500).json({ message: "Failed to delete account" });
+    }
+};
+
+// ============================================
+// FORGOT PASSWORD - RESET PASSWORD FLOW
+// ============================================
+
+// Step 1: Send OTP for password reset
+export const forgotPassword = async (req: Request, res: Response) => {
+    try {
+        const { phone } = req.body;
+
+        if (!phone) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone number is required"
+            });
+        }
+
+        const cleanPhone = phone.replace(/\s+/g, '');
+
+        // Check if user exists
+        const user = await db.query.users.findFirst({
+            where: eq(users.phoneNumber, cleanPhone),
+        });
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "No account found with this phone number"
+            });
+        }
+
+        // Generate OTP
+        const otp = await createOtp(cleanPhone, 10 * 60 * 1000); // 10 minutes expiry
+
+        // Send SMS
+        if (process.env.NODE_ENV === 'production') {
+            await sendSms(cleanPhone, `SERVEX: Your password reset OTP is: ${otp}. Valid for 10 minutes.`, "otp_reset");
+        } else {
+            console.log(`📱 Development OTP for password reset (${cleanPhone}): ${otp}`);
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "OTP sent successfully"
+        });
+    } catch (error) {
+        console.error("Forgot password error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to send OTP"
+        });
+    }
+};
+
+// Step 2: Verify OTP and return reset token
+export const verifyForgotOtp = async (req: Request, res: Response) => {
+    try {
+        const { phone, otp } = req.body;
+
+        if (!phone || !otp) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone number and OTP are required"
+            });
+        }
+
+        const cleanPhone = phone.replace(/\s+/g, '');
+
+        // Verify OTP
+        await verifyOtpService(cleanPhone, otp);
+
+        // Generate a temporary reset token (JWT with short expiry - 15 minutes)
+        const resetToken = jwt.sign(
+            { 
+                phone: cleanPhone, 
+                type: 'password_reset',
+                purpose: 'reset_password'
+            },
+            process.env.JWT_SECRET!,
+            { expiresIn: '15m' }
+        );
+
+        return res.status(200).json({
+            success: true,
+            message: "OTP verified successfully",
+            token: resetToken
+        });
+    } catch (error) {
+        console.error("Verify forgot OTP error:", error);
+        return res.status(400).json({
+            success: false,
+            message: error instanceof Error ? error.message : "Invalid or expired OTP"
+        });
+    }
+};
+
+// Step 3: Reset password using the token
+export const resetPassword = async (req: Request, res: Response) => {
+    try {
+        const { phone, token, newPassword } = req.body;
+
+        if (!phone || !token || !newPassword) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone number, token, and new password are required"
+            });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must be at least 6 characters"
+            });
+        }
+
+        // Verify the reset token
+        let decoded;
+        try {
+            decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
+                phone: string;
+                type: string;
+                purpose: string;
+            };
+        } catch (error) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid or expired reset token"
+            });
+        }
+
+        // Check if token is for password reset
+        if (decoded.type !== 'password_reset' || decoded.purpose !== 'reset_password') {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid token type"
+            });
+        }
+
+        // Verify phone matches
+        const cleanPhone = phone.replace(/\s+/g, '');
+        if (decoded.phone !== cleanPhone) {
+            return res.status(401).json({
+                success: false,
+                message: "Token does not match this phone number"
+            });
+        }
+
+        // Check if user exists
+        const user = await db.query.users.findFirst({
+            where: eq(users.phoneNumber, cleanPhone),
+        });
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        // Hash new password
+        const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+        // Update password
+        await db.update(users)
+            .set({ 
+                passwordHash: hashedPassword,
+                updatedAt: new Date()
+            })
+            .where(eq(users.id, user.id));
+
+        // Optional: Invalidate all existing refresh tokens for this user
+        await db.delete(refreshTokens).where(eq(refreshTokens.userId, user.id));
+
+        return res.status(200).json({
+            success: true,
+            message: "Password reset successfully"
+        });
+    } catch (error) {
+        console.error("Reset password error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to reset password"
+        });
     }
 };

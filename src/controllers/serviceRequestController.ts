@@ -1,4 +1,6 @@
+// backend/src/controllers/serviceRequestController.ts
 import { Request, Response } from "express";
+import { and, eq, desc, sql, inArray, gte, lt, lte, gt } from "drizzle-orm";
 import { db } from "../db";
 import { 
   serviceRequests, 
@@ -9,14 +11,12 @@ import {
   serviceRequestPlatformServices 
 } from "../db/schema";
 import { z } from "zod";
-import { and, eq, desc, sql, inArray, gte, ne, isNull } from "drizzle-orm";
 import { createNotification } from "./notificationController";
 import { createAuditLog } from "../services/auditLog";
 import { sendSms } from "../services/sms";
 import { shouldSendNotification } from "../services/notificationPreferences";
 import { initiateDispatch, stopDispatch } from "../services/dispatch";
 import { cacheService } from "../services/cacheService";
-import { logger, trackPerformance } from "../utils/logger";
 
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
@@ -30,6 +30,7 @@ function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
   return R * c;
 }
 
+// Simplified schema - only include fields that exist in your database
 const createServiceRequestSchema = z.object({
   type: z.string(),
   platformServiceIds: z.array(z.string().uuid()).optional(),
@@ -39,15 +40,18 @@ const createServiceRequestSchema = z.object({
   }),
   address: z.string(),
   source: z.enum(["gps", "drag"]),
-  selectedMistriId: z.string().uuid().optional(),
-  customerNotes: z.string().optional(),
+  selectedMistriId: z.string().uuid().optional().nullable(),
+  customerNotes: z.string().optional().nullable(),
 });
 
 export const createServiceRequest = async (req: Request, res: Response) => {
   try {
+    console.log('📝 Create service request - Request body:', JSON.stringify(req.body, null, 2));
+    
     const validatedData = createServiceRequestSchema.safeParse(req.body);
 
     if (!validatedData.success) {
+      console.error('❌ Validation error:', validatedData.error.format());
       return res.status(400).json({
         success: false,
         message: "Invalid request data",
@@ -55,12 +59,7 @@ export const createServiceRequest = async (req: Request, res: Response) => {
       });
     }
 
-    const { type, platformServiceIds, coords, address, source, customerNotes } = validatedData.data;
-    let selectedMistriId = validatedData.data.selectedMistriId;
-    if (selectedMistriId && typeof selectedMistriId === 'string' && selectedMistriId.trim() === '') {
-      selectedMistriId = undefined;
-    }
-
+    const { type, platformServiceIds, coords, address, source, customerNotes, selectedMistriId } = validatedData.data;
     const userId = req.user?.id;
 
     if (!userId) {
@@ -70,55 +69,46 @@ export const createServiceRequest = async (req: Request, res: Response) => {
       });
     }
 
-    let finalServiceType = type;
+    console.log('👤 User ID:', userId);
+    console.log('📦 Service type:', type);
+    console.log('📍 Address:', address);
 
-    if (selectedMistriId) {
-      const mistriProfile = await db
-        .select({
-          serviceName: services.serviceName,
-        })
-        .from(mistriProfiles)
-        .innerJoin(services, eq(mistriProfiles.serviceId, services.id))
-        .where(eq(mistriProfiles.userId, selectedMistriId))
-        .limit(1);
+    // Validate service type exists
+    const serviceExists = await db.select().from(services).where(
+      and(
+        eq(services.serviceName, type),
+        eq(services.isActive, true)
+      )
+    );
 
-      if (mistriProfile.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid mistri ID or mistri profile not found",
-        });
-      }
-
-      finalServiceType = mistriProfile[0].serviceName;
-    } else {
-      const serviceExists = await db.select().from(services).where(
-        and(
-          eq(services.serviceName, type),
-          eq(services.isActive, true)
-        )
-      );
-
-      if (serviceExists.length === 0) {
-        return res.status(400).json({
-          success: false,
-          message: `Invalid service type: ${type}`,
-        });
-      }
+    if (serviceExists.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid service type: ${type}`,
+      });
     }
 
-    const result = await db.insert(serviceRequests).values({
+    // Create request with pending status
+    const insertData: any = {
       customerId: userId,
-      type: finalServiceType as any,
+      type: type,
       lat: coords.lat.toString(),
       lng: coords.lng.toString(),
       address: address,
       source: source,
+      status: "pending",
       assignedMistriId: selectedMistriId || null,
       customerNotes: customerNotes || null,
-    }).returning();
+    };
 
+    console.log('📝 Insert data:', insertData);
+
+    const result = await db.insert(serviceRequests).values(insertData).returning();
     const newRequest = result[0];
 
+    console.log('✅ Request created with ID:', newRequest.id);
+
+    // Add platform services if selected
     if (platformServiceIds && platformServiceIds.length > 0) {
       const validServices = await db
         .select()
@@ -136,39 +126,38 @@ export const createServiceRequest = async (req: Request, res: Response) => {
           platformServiceId: service.id,
         }));
         await db.insert(serviceRequestPlatformServices).values(junctionEntries);
+        console.log(`📎 Added ${junctionEntries.length} platform services`);
       }
     }
 
-    if (selectedMistriId) {
-      try {
-        await createNotification(
-          selectedMistriId,
-          'New Service Request',
-          `You have a new service request at ${address}`,
-          'new_request',
-          newRequest.id
-        );
-      } catch (notifError) {
-        console.error('Failed to create notification:', notifError);
-      }
-    } else {
-      // Broadcast request: kick off sequential "ping nearest mistri" dispatch
-      void initiateDispatch(newRequest.id);
+    // Notify admins
+    const admins = await db.query.users.findMany({
+      where: eq(users.role, "admin"),
+    });
+
+    for (const admin of admins) {
+      await createNotification(
+        admin.id,
+        "New Service Request",
+        `Customer requested ${type} service at ${address.substring(0, 100)}`,
+        "admin_new_request",
+        newRequest.id
+      );
     }
 
-    // Invalidate nearby mistris cache for this area
-    await cacheService.del(`nearby_mistris:*`);
+    console.log(`📧 Notified ${admins.length} admins`);
 
     return res.status(201).json({
       success: true,
+      message: "Service request submitted successfully",
       requestId: newRequest.id,
-      status: newRequest.status,
+      status: "pending",
     });
   } catch (error) {
-    console.error("Error creating service request:", error);
+    console.error("❌ Error creating service request:", error);
     return res.status(500).json({
       success: false,
-      message: "Failed to create service request",
+      message: "Failed to create service request: " + (error as Error).message,
     });
   }
 };
@@ -437,7 +426,6 @@ export const acceptServiceRequest = async (req: Request, res: Response) => {
       })
       .where(eq(mistriProfiles.userId, userId));
 
-    // A mistri accepted — stop any in-flight sequential ping for this request
     stopDispatch(id);
 
     const mistri = await db.query.users.findFirst({
@@ -585,7 +573,7 @@ export const getPendingServiceRequests = async (req: Request, res: Response) => 
         .where(eq(serviceRequests.status, 'pending'))
         .orderBy(desc(serviceRequests.createdAt));
       
-      await cacheService.set(cacheKey, requests, 30); // Cache for 30 seconds
+      await cacheService.set(cacheKey, requests, 30);
     }
 
     return res.status(200).json({
@@ -622,10 +610,20 @@ export const getMistriAssignedRequests = async (req: Request, res: Response) => 
       });
     }
 
+    const assignedRequests = await db
+      .select()
+      .from(serviceRequests)
+      .where(
+        and(
+          eq(serviceRequests.assignedMistriId, userId),
+          eq(serviceRequests.status, 'assigned')
+        )
+      )
+      .orderBy(desc(serviceRequests.createdAt));
+
     return res.status(200).json({
       success: true,
-      requests: [],
-      message: "Job assignment system not yet implemented"
+      requests: assignedRequests,
     });
   } catch (error) {
     console.error("Error fetching mistri assigned requests:", error);
@@ -714,7 +712,6 @@ export const completeServiceRequest = async (req: Request, res: Response) => {
       }
     }
 
-    // Invalidate caches
     await cacheService.del(`pending_requests:*`);
     await cacheService.del(`nearby_mistris:*`);
 
@@ -859,7 +856,6 @@ export const startWork = async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, message: "Failed to start work" });
   }
 };
-
 
 export const getJobHistory = async (req: Request, res: Response) => {
   try {

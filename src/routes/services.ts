@@ -1,9 +1,10 @@
-import express from "express";
-import { getServices } from "../controllers/servicesController";
+import express from 'express';
+import { getServices, getServiceById, getActiveServices } from '../controllers/servicesController';
 
 const router = express.Router();
 
-// GET /api/services - Get all active services (public endpoint)
-router.get("/", getServices);
+router.get('/', getServices);
+router.get('/active', getActiveServices);
+router.get('/:id', getServiceById);
 
 export default router;

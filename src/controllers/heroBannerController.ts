@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { db } from "../db";
 import { heroBanners } from "../db/schema";
-import { eq, asc, sql } from "drizzle-orm";
+import { eq, asc, and, sql } from "drizzle-orm";
 import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
 import sharp from "sharp";
@@ -30,14 +30,85 @@ async function uploadBannerImage(base64Image: string, bannerId: string): Promise
     return data.publicUrl;
 }
 
-export const getPublicHeroBanners = async (_req: Request, res: Response) => {
+// Get public banners for mobile app - can filter by ad type
+export const getPublicHeroBanners = async (req: Request, res: Response) => {
+    try {
+        const adType = req.query.adType as string;
+        
+        let whereCondition;
+        if (adType === 'ad1') {
+            whereCondition = and(
+                eq(heroBanners.isActive, true),
+                eq(heroBanners.adType, 'ad1')
+            );
+        } else if (adType === 'ad2') {
+            whereCondition = and(
+                eq(heroBanners.isActive, true),
+                eq(heroBanners.adType, 'ad2')
+            );
+        } else {
+            whereCondition = eq(heroBanners.isActive, true);
+        }
+        
+        const banners = await db
+            .select()
+            .from(heroBanners)
+            .where(whereCondition)
+            .orderBy(asc(heroBanners.displayOrder));
+
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        
+        return res.json({ success: true, banners });
+    } catch (error) {
+        console.error("Error fetching hero banners:", error);
+        return res.status(500).json({ success: false, message: "Failed to fetch banners" });
+    }
+};
+
+// Get banners by specific ad type
+export const getBannersByAdType = async (req: Request, res: Response) => {
+    try {
+        const { adType } = req.params;
+        
+        if (!['ad1', 'ad2', 'both'].includes(adType)) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Invalid ad type. Must be 'ad1', 'ad2', or 'both'" 
+            });
+        }
+        
+        let whereCondition;
+        if (adType === 'both') {
+            whereCondition = eq(heroBanners.isActive, true);
+        } else {
+            whereCondition = and(
+                eq(heroBanners.isActive, true),
+                eq(heroBanners.adType, adType)
+            );
+        }
+        
+        const banners = await db
+            .select()
+            .from(heroBanners)
+            .where(whereCondition)
+            .orderBy(asc(heroBanners.displayOrder));
+
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        
+        return res.json({ success: true, banners });
+    } catch (error) {
+        console.error("Error fetching banners by ad type:", error);
+        return res.status(500).json({ success: false, message: "Failed to fetch banners" });
+    }
+};
+
+// Get admin banners
+export const getAdminHeroBanners = async (_req: Request, res: Response) => {
     try {
         const banners = await db
             .select()
             .from(heroBanners)
-            .where(eq(heroBanners.isActive, true))
             .orderBy(asc(heroBanners.displayOrder));
-
         return res.json({ success: true, banners });
     } catch (error) {
         console.error("Error fetching hero banners:", error);
@@ -45,54 +116,108 @@ export const getPublicHeroBanners = async (_req: Request, res: Response) => {
     }
 };
 
-export const getAdminHeroBanners = async (_req: Request, res: Response) => {
+// Get banner statistics
+export const getBannerStats = async (_req: Request, res: Response) => {
     try {
-        const banners = await db.select().from(heroBanners).orderBy(asc(heroBanners.displayOrder));
-        return res.json({ success: true, banners });
+        const [totalCount, ad1Count, ad2Count, bothCount, activeCount] = await Promise.all([
+            db.select({ count: sql<number>`count(*)` }).from(heroBanners),
+            db.select({ count: sql<number>`count(*)` }).from(heroBanners).where(eq(heroBanners.adType, 'ad1')),
+            db.select({ count: sql<number>`count(*)` }).from(heroBanners).where(eq(heroBanners.adType, 'ad2')),
+            db.select({ count: sql<number>`count(*)` }).from(heroBanners).where(eq(heroBanners.adType, 'both')),
+            db.select({ count: sql<number>`count(*)` }).from(heroBanners).where(eq(heroBanners.isActive, true)),
+        ]);
+
+        return res.json({
+            success: true,
+            stats: {
+                total: Number(totalCount[0]?.count || 0),
+                ad1: Number(ad1Count[0]?.count || 0),
+                ad2: Number(ad2Count[0]?.count || 0),
+                both: Number(bothCount[0]?.count || 0),
+                active: Number(activeCount[0]?.count || 0),
+            }
+        });
     } catch (error) {
-        console.error("Error fetching hero banners:", error);
-        return res.status(500).json({ success: false, message: "Failed to fetch banners" });
+        console.error("Error fetching banner stats:", error);
+        return res.status(500).json({ success: false, message: "Failed to fetch stats" });
     }
 };
 
 const createBannerSchema = z.object({
-    title: z.string().max(255).optional(),
-    subtitle: z.string().optional(),
+    title: z.string().max(255).optional().nullable(),
+    subtitle: z.string().optional().nullable(),
     imageBase64: z.string().optional(),
     imageUrl: z.string().url().optional(),
-    linkUrl: z.string().url().optional(),
+    linkUrl: z.string().url().optional().nullable(),
     displayOrder: z.number().int().min(0).optional(),
     isActive: z.boolean().optional(),
+    adType: z.enum(['ad1', 'ad2', 'both']).default('both'),
+    videoUrl: z.string().url().optional().nullable(),
 });
 
 export const createHeroBanner = async (req: Request, res: Response): Promise<Response> => {
     try {
         const parsed = createBannerSchema.safeParse(req.body);
         if (!parsed.success) {
-            return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
+            console.error("Validation error:", parsed.error.format());
+            return res.status(400).json({ 
+                success: false, 
+                message: "Invalid data", 
+                errors: parsed.error.format() 
+            });
         }
 
-        const { imageBase64, ...rest } = parsed.data;
+        const { imageBase64, imageUrl, videoUrl, adType, ...rest } = parsed.data;
 
-        if (!imageBase64 && !rest.imageUrl) {
-            return res.status(400).json({ success: false, message: "imageBase64 or imageUrl is required" });
+        if (!imageBase64 && !imageUrl && !videoUrl) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Either imageBase64, imageUrl, or videoUrl is required" 
+            });
         }
 
-        const [placeholder] = await db.insert(heroBanners).values({
-            imageUrl: rest.imageUrl ?? "pending",
-            ...rest,
-        }).returning();
-
-        let imageUrl = rest.imageUrl;
+        let finalImageUrl = imageUrl || null;
+        let finalVideoUrl = videoUrl || null;
 
         if (imageBase64) {
-            imageUrl = await uploadBannerImage(imageBase64, placeholder.id);
-            await db.update(heroBanners).set({ imageUrl }).where(eq(heroBanners.id, placeholder.id));
+            // Create a temporary record
+            const [tempBanner] = await db.insert(heroBanners).values({
+                imageUrl: "processing",
+                adType: adType || 'both',
+                title: rest.title || null,
+                subtitle: rest.subtitle || null,
+                linkUrl: rest.linkUrl || null,
+                displayOrder: rest.displayOrder ?? 0,
+                isActive: rest.isActive ?? true,
+            }).returning();
+
+            // Upload the image
+            finalImageUrl = await uploadBannerImage(imageBase64, tempBanner.id);
+            
+            // Update with the final URL
+            const [updated] = await db.update(heroBanners)
+                .set({ 
+                    imageUrl: finalImageUrl,
+                    videoUrl: finalVideoUrl,
+                })
+                .where(eq(heroBanners.id, tempBanner.id))
+                .returning();
+            
+            return res.status(201).json({ success: true, banner: updated });
+        } else {
+            const [banner] = await db.insert(heroBanners).values({
+                imageUrl: finalImageUrl || '',
+                videoUrl: finalVideoUrl,
+                adType: adType || 'both',
+                title: rest.title || null,
+                subtitle: rest.subtitle || null,
+                linkUrl: rest.linkUrl || null,
+                displayOrder: rest.displayOrder ?? 0,
+                isActive: rest.isActive ?? true,
+            }).returning();
+            
+            return res.status(201).json({ success: true, banner });
         }
-
-        const [final] = await db.select().from(heroBanners).where(eq(heroBanners.id, placeholder.id)).limit(1);
-
-        return res.status(201).json({ success: true, banner: final });
     } catch (error) {
         console.error("Error creating hero banner:", error);
         return res.status(500).json({ success: false, message: "Failed to create banner" });
@@ -100,13 +225,15 @@ export const createHeroBanner = async (req: Request, res: Response): Promise<Res
 };
 
 const updateBannerSchema = z.object({
-    title: z.string().max(255).optional(),
-    subtitle: z.string().optional(),
+    title: z.string().max(255).optional().nullable(),
+    subtitle: z.string().optional().nullable(),
     imageBase64: z.string().optional(),
     imageUrl: z.string().url().optional(),
+    videoUrl: z.string().url().optional().nullable(),
     linkUrl: z.string().url().optional().nullable(),
     displayOrder: z.number().int().min(0).optional(),
     isActive: z.boolean().optional(),
+    adType: z.enum(['ad1', 'ad2', 'both']).optional(),
 });
 
 export const updateHeroBanner = async (req: Request, res: Response) => {
@@ -114,22 +241,42 @@ export const updateHeroBanner = async (req: Request, res: Response) => {
         const id = req.params.id as string;
         const parsed = updateBannerSchema.safeParse(req.body);
         if (!parsed.success) {
-            return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
+            return res.status(400).json({ 
+                success: false, 
+                message: "Invalid data", 
+                errors: parsed.error.format() 
+            });
         }
 
         const [existing] = await db.select().from(heroBanners).where(eq(heroBanners.id, id)).limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "Banner not found" });
 
-        const { imageBase64, ...rest } = parsed.data;
+        const { imageBase64, imageUrl, videoUrl, adType, ...rest } = parsed.data;
 
-        let imageUrl = rest.imageUrl;
+        let finalImageUrl = existing.imageUrl;
+        let finalVideoUrl = existing.videoUrl;
+
         if (imageBase64) {
-            imageUrl = await uploadBannerImage(imageBase64, id);
+            finalImageUrl = await uploadBannerImage(imageBase64, id);
+        } else if (imageUrl) {
+            finalImageUrl = imageUrl;
+        }
+        
+        if (videoUrl !== undefined) {
+            finalVideoUrl = videoUrl;
         }
 
-        const [updated] = await db
-            .update(heroBanners)
-            .set({ ...rest, ...(imageUrl ? { imageUrl } : {}), updatedAt: new Date() })
+        const updateData: any = {
+            ...rest,
+            updatedAt: new Date(),
+        };
+        
+        if (finalImageUrl) updateData.imageUrl = finalImageUrl;
+        if (finalVideoUrl !== undefined) updateData.videoUrl = finalVideoUrl;
+        if (adType) updateData.adType = adType;
+
+        const [updated] = await db.update(heroBanners)
+            .set(updateData)
             .where(eq(heroBanners.id, id))
             .returning();
 
@@ -139,7 +286,100 @@ export const updateHeroBanner = async (req: Request, res: Response) => {
         return res.status(500).json({ success: false, message: "Failed to update banner" });
     }
 };
+// Bulk delete banners (add after deleteHeroBanner)
+export const bulkDeleteHeroBanners = async (req: Request, res: Response) => {
+    try {
+        const { ids } = req.body;
+        const adminId = req.user!.id;
 
+        if (!Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Array of banner IDs is required" 
+            });
+        }
+
+        let deletedCount = 0;
+        for (const id of ids) {
+            const [existing] = await db.select().from(heroBanners).where(eq(heroBanners.id, id)).limit(1);
+            if (existing) {
+                if (existing.imageUrl?.includes("supabase")) {
+                    try {
+                        const url = new URL(existing.imageUrl);
+                        const match = url.pathname.match(/\/storage\/v1\/object\/public\/([^/]+)\/(.+)/);
+                        if (match) {
+                            const [, bucket, filePath] = match;
+                            await supabase.storage.from(bucket).remove([filePath]);
+                        }
+                    } catch (error) {
+                        console.error("Error deleting from storage:", error);
+                    }
+                }
+                await db.delete(heroBanners).where(eq(heroBanners.id, id));
+                deletedCount++;
+            }
+        }
+
+        await createAuditLog({
+            entityType: "hero_banner",
+            entityId: "bulk",
+            action: "bulk_delete",
+            performedBy: adminId,
+            performedByRole: "admin",
+            newValue: { deletedCount, ids },
+        });
+
+        return res.json({ 
+            success: true, 
+            message: `${deletedCount} banners deleted successfully`,
+            deletedCount
+        });
+    } catch (error) {
+        console.error("Error bulk deleting banners:", error);
+        return res.status(500).json({ success: false, message: "Failed to delete banners" });
+    }
+};
+//Duplicate banner (add after toggleBannerActive)
+export const duplicateHeroBanner = async (req: Request, res: Response) => {
+    try {
+        const id = req.params.id as string;
+        const adminId = req.user!.id;
+
+        const [existing] = await db.select().from(heroBanners).where(eq(heroBanners.id, id)).limit(1);
+        if (!existing) return res.status(404).json({ success: false, message: "Banner not found" });
+
+        // Get the highest display order
+        const maxOrderResult = await db
+            .select({ maxOrder: sql<number>`max(${heroBanners.displayOrder})` })
+            .from(heroBanners);
+        const maxOrder = maxOrderResult[0]?.maxOrder ?? 0;
+
+        const [duplicated] = await db.insert(heroBanners).values({
+            title: `${existing.title} (Copy)`,
+            subtitle: existing.subtitle,
+            imageUrl: existing.imageUrl,
+            videoUrl: existing.videoUrl,
+            linkUrl: existing.linkUrl,
+            adType: existing.adType,
+            isActive: false,
+            displayOrder: maxOrder + 1,
+        }).returning();
+
+        await createAuditLog({
+            entityType: "hero_banner",
+            entityId: duplicated.id,
+            action: "duplicate",
+            performedBy: adminId,
+            performedByRole: "admin",
+            newValue: { originalId: id, title: duplicated.title },
+        });
+
+        return res.status(201).json({ success: true, banner: duplicated });
+    } catch (error) {
+        console.error("Error duplicating hero banner:", error);
+        return res.status(500).json({ success: false, message: "Failed to duplicate banner" });
+    }
+};
 export const deleteHeroBanner = async (req: Request, res: Response) => {
     try {
         const id = req.params.id as string;
@@ -156,7 +396,8 @@ export const deleteHeroBanner = async (req: Request, res: Response) => {
                     const [, bucket, filePath] = match;
                     await supabase.storage.from(bucket).remove([filePath]);
                 }
-            } catch {
+            } catch (error) {
+                console.error("Error deleting from storage:", error);
             }
         }
 
@@ -168,7 +409,7 @@ export const deleteHeroBanner = async (req: Request, res: Response) => {
             action: "delete",
             performedBy: adminId,
             performedByRole: "admin",
-            oldValue: { title: existing.title, imageUrl: existing.imageUrl },
+            oldValue: { title: existing.title, imageUrl: existing.imageUrl, adType: existing.adType },
             newValue: null,
         });
 
@@ -186,15 +427,51 @@ export const reorderHeroBanners = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, message: "order array required" });
         }
 
-        await Promise.all(
-            order.map(({ id, displayOrder }) =>
-                db.update(heroBanners).set({ displayOrder, updatedAt: new Date() }).where(eq(heroBanners.id, id))
-            )
-        );
+        for (const { id, displayOrder } of order) {
+            await db.update(heroBanners)
+                .set({ displayOrder, updatedAt: new Date() })
+                .where(eq(heroBanners.id, id));
+        }
 
         return res.json({ success: true, message: "Reordered successfully" });
     } catch (error) {
         console.error("Error reordering banners:", error);
         return res.status(500).json({ success: false, message: "Failed to reorder banners" });
+    }
+};
+
+// Toggle banner active status
+export const toggleBannerActive = async (req: Request, res: Response) => {
+    try {
+        const id = req.params.id as string;
+        const adminId = req.user!.id;
+
+        const [existing] = await db.select().from(heroBanners).where(eq(heroBanners.id, id)).limit(1);
+        if (!existing) return res.status(404).json({ success: false, message: "Banner not found" });
+
+        const newStatus = !existing.isActive;
+        const [updated] = await db.update(heroBanners)
+            .set({ isActive: newStatus, updatedAt: new Date() })
+            .where(eq(heroBanners.id, id))
+            .returning();
+
+        await createAuditLog({
+            entityType: "hero_banner",
+            entityId: id,
+            action: newStatus ? "activate" : "deactivate",
+            performedBy: adminId,
+            performedByRole: "admin",
+            oldValue: { isActive: existing.isActive },
+            newValue: { isActive: newStatus },
+        });
+
+        return res.json({ 
+            success: true, 
+            banner: updated,
+            message: `Banner ${newStatus ? 'activated' : 'deactivated'} successfully`
+        });
+    } catch (error) {
+        console.error("Error toggling banner status:", error);
+        return res.status(500).json({ success: false, message: "Failed to toggle banner status" });
     }
 };
