@@ -13,6 +13,7 @@ import {
   index,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
+import { relations } from "drizzle-orm";
 
 export const userRoleEnum = pgEnum("user_role", ["user", "mistri", "admin"]);
 export const serviceTypeEnum = pgEnum("service_type", ["electrician", "plumber"]);
@@ -157,6 +158,27 @@ export const phoneChangeAttempts = pgTable("phone_change_attempts", {
   createdAtIdx: index("phone_change_attempts_created_at_idx").on(table.createdAt),
 }));
 
+export const serviceItems = pgTable("service_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  platformServiceId: uuid("platform_service_id").notNull().references(() => platformServices.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  price: decimal("price", { precision: 10, scale: 2 }).notNull(),
+  durationMinutes: integer("duration_minutes"),
+  isActive: boolean("is_active").default(true).notNull(),
+  isPopular: boolean("is_popular").default(false).notNull(),
+  imageUrl: text("image_url"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Relations
+export const serviceItemsRelations = relations(serviceItems, ({ one }) => ({
+  platformService: one(platformServices, {
+    fields: [serviceItems.platformServiceId],
+    references: [platformServices.id],
+  }),
+}));
 export const platformServices = pgTable("platform_services", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   serviceId: integer("service_id").notNull().references(() => services.id),

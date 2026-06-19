@@ -2,11 +2,11 @@ import express from "express";
 import { authenticate } from "../middleware/auth";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { requirePermission } from "../middleware/requirePermission";
-import { 
-    adminSendOtp, 
-    adminVerifyOtp, 
+import {
+    adminSendOtp,
+    adminVerifyOtp,
     adminLogout,
-    adminLoginWithPassword, 
+    adminLoginWithPassword,
     checkAdminTwoFactorStatus
 } from "../controllers/adminAuthController";
 import {
@@ -52,13 +52,13 @@ import {
     getMistriJobs,
 } from "../controllers/adminController";
 import {
+    // Service Categories (Level 1)
     getAllServiceCategories,
     createServiceCategory,
     updateServiceCategory,
     deleteServiceCategory,
     getServiceCategoryById,
-} from "../controllers/adminServiceController";
-import {
+    // Platform Services (Level 2)
     getAllPlatformServices,
     createPlatformService,
     updatePlatformService,
@@ -66,11 +66,21 @@ import {
     getPlatformServiceById,
     getPlatformServicesStats,
     togglePlatformServiceActive,
-    togglePlatformServicePopular, // ✅ ADD THIS IMPORT
+    togglePlatformServicePopular,
     bulkDeletePlatformServices,
     getPlatformServicesByCategory,
     deactivatePlatformService,
     reactivatePlatformService,
+    // Service Items (Level 3)
+    getServiceItems,
+    getServiceItemById,
+    createServiceItem,
+    updateServiceItem,
+    deleteServiceItem,
+    bulkDeleteServiceItems,
+    toggleServiceItemPopular,
+    toggleServiceItemActive,
+    getServiceItemsStats,
 } from "../controllers/adminServiceController";
 import {
     getAdminRatings,
@@ -83,6 +93,11 @@ import {
     updateHeroBanner,
     deleteHeroBanner,
     reorderHeroBanners,
+    bulkDeleteHeroBanners,
+    duplicateHeroBanner,
+    toggleBannerActive,
+    getBannerStats,
+    getBannersByAdType,
 } from "../controllers/heroBannerController";
 import { uploadAsset } from "../controllers/uploadController";
 import {
@@ -193,7 +208,7 @@ router.patch("/mistris/:userId/approve", requirePermission("mistris.manage"), ap
 router.patch("/mistris/:userId/reject", requirePermission("mistris.manage"), rejectMistri);
 
 // ============================================
-// SERVICE CATEGORIES
+// SERVICE CATEGORIES (Level 1)
 // ============================================
 router.get("/service-categories", requirePermission("services.manage"), getAllServiceCategories);
 router.get("/service-categories/:id", requirePermission("services.manage"), getServiceCategoryById);
@@ -202,7 +217,7 @@ router.patch("/service-categories/:id", requirePermission("services.manage"), up
 router.delete("/service-categories/:id", requirePermission("services.manage"), deleteServiceCategory);
 
 // ============================================
-// PLATFORM SERVICES
+// PLATFORM SERVICES (Level 2 - Sub-Categories)
 // ============================================
 // GET endpoints
 router.get("/platform-services", requirePermission("services.manage"), getAllPlatformServices);
@@ -217,12 +232,32 @@ router.post("/platform-services/bulk-delete", requirePermission("services.manage
 // PATCH endpoints
 router.patch("/platform-services/:id", requirePermission("services.manage"), updatePlatformService);
 router.patch("/platform-services/:id/toggle-active", requirePermission("services.manage"), togglePlatformServiceActive);
-router.patch("/platform-services/:id/toggle-popular", requirePermission("services.manage"), togglePlatformServicePopular); // ✅ ADD THIS ROUTE
+router.patch("/platform-services/:id/toggle-popular", requirePermission("services.manage"), togglePlatformServicePopular);
 router.patch("/platform-services/:id/deactivate", requirePermission("services.manage"), deactivatePlatformService);
 router.patch("/platform-services/:id/reactivate", requirePermission("services.manage"), reactivatePlatformService);
 
 // DELETE endpoint - PERMANENT DELETE
 router.delete("/platform-services/:id", requirePermission("services.manage"), deletePlatformService);
+
+// ============================================
+// SERVICE ITEMS (Level 3 - Individual Services)
+// ============================================
+// GET endpoints
+router.get("/service-items", requirePermission("services.manage"), getServiceItems);
+router.get("/service-items/stats", requirePermission("services.manage"), getServiceItemsStats);
+router.get("/service-items/:id", requirePermission("services.manage"), getServiceItemById);
+
+// POST endpoints
+router.post("/service-items", requirePermission("services.manage"), createServiceItem);
+router.post("/service-items/bulk-delete", requirePermission("services.manage"), bulkDeleteServiceItems);
+
+// PATCH endpoints
+router.patch("/service-items/:id", requirePermission("services.manage"), updateServiceItem);
+router.patch("/service-items/:id/toggle-popular", requirePermission("services.manage"), toggleServiceItemPopular);
+router.patch("/service-items/:id/toggle-active", requirePermission("services.manage"), toggleServiceItemActive);
+
+// DELETE endpoint
+router.delete("/service-items/:id", requirePermission("services.manage"), deleteServiceItem);
 
 // ============================================
 // CDN ASSET UPLOAD
@@ -233,9 +268,14 @@ router.post("/upload", uploadAsset);
 // HERO BANNERS
 // ============================================
 router.get("/hero-banners", requirePermission("banners.manage"), getAdminHeroBanners);
+router.get("/hero-banners/stats", requirePermission("banners.manage"), getBannerStats);
+router.get("/hero-banners/ad-type/:adType", requirePermission("banners.manage"), getBannersByAdType);
 router.post("/hero-banners", requirePermission("banners.manage"), createHeroBanner);
 router.patch("/hero-banners/reorder", requirePermission("banners.manage"), reorderHeroBanners);
 router.patch("/hero-banners/:id", requirePermission("banners.manage"), updateHeroBanner);
+router.patch("/hero-banners/:id/toggle-active", requirePermission("banners.manage"), toggleBannerActive);
+router.post("/hero-banners/:id/duplicate", requirePermission("banners.manage"), duplicateHeroBanner);
+router.post("/hero-banners/bulk-delete", requirePermission("banners.manage"), bulkDeleteHeroBanners);
 router.delete("/hero-banners/:id", requirePermission("banners.manage"), deleteHeroBanner);
 
 // ============================================
@@ -252,6 +292,16 @@ router.get("/service-requests/counts", requirePermission("requests.view"), getSe
 router.get("/service-requests/assignable-mistris", requirePermission("requests.assign"), getAssignableMistris);
 router.get("/service-requests", requirePermission("requests.view"), getAdminServiceRequests);
 router.post("/service-requests/:id/assign", requirePermission("requests.assign"), assignServiceRequest);
+
+// ============================================
+// PENDING REQUESTS MANAGEMENT
+// ============================================
+router.get("/pending-requests", requirePermission("requests.view"), getPendingApprovalRequests);
+router.get("/pending-requests/:id", requirePermission("requests.view"), getRequestForAssignment);
+router.get("/available-mistris", requirePermission("requests.view"), getAvailableMistrisForAssignment);
+router.post("/pending-requests/:id/assign", requirePermission("requests.manage"), assignMistriToRequest);
+router.post("/pending-requests/:id/reject", requirePermission("requests.manage"), rejectPendingRequest);
+router.get("/all-requests", requirePermission("requests.view"), getAllRequests);
 
 // ============================================
 // AUDIT LOGS
@@ -305,16 +355,5 @@ router.post("/employees", requirePermission("employees.manage"), createEmployee)
 router.patch("/employees/:id", requirePermission("employees.manage"), updateEmployee);
 router.patch("/employees/:id/toggle-active", requirePermission("employees.manage"), toggleEmployeeActive);
 router.delete("/employees/:id", requirePermission("employees.manage"), removeEmployee);
-
-//=====================================
-// Pending Requests Management
-//=====================================
-
-router.get("/pending-requests", requirePermission("requests.view"), getPendingApprovalRequests);
-router.get("/pending-requests/:id", requirePermission("requests.view"), getRequestForAssignment);
-router.get("/available-mistris", requirePermission("requests.view"), getAvailableMistrisForAssignment);
-router.post("/pending-requests/:id/assign", requirePermission("requests.manage"), assignMistriToRequest);
-router.post("/pending-requests/:id/reject", requirePermission("requests.manage"), rejectPendingRequest);
-router.get("/all-requests", requirePermission("requests.view"), getAllRequests);
 
 export default router;
