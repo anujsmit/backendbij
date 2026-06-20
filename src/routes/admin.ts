@@ -1,7 +1,20 @@
+// backend/src/routes/adminRoutes.ts
+
 import express from "express";
 import { authenticate } from "../middleware/auth";
 import { requireAdmin } from "../middleware/requireAdmin";
 import { requirePermission } from "../middleware/requirePermission";
+
+// ============================================
+// SERVICE HIERARCHY CONTROLLERS
+// ============================================
+import * as categoryController from "../controllers/serviceCategoryController";
+import * as subCategoryController from "../controllers/subCategoryController";
+import * as serviceSubCategoryItemController from "../controllers/serviceSubCategoryItemController";
+
+// ============================================
+// OTHER CONTROLLER IMPORTS
+// ============================================
 import {
     adminSendOtp,
     adminVerifyOtp,
@@ -51,37 +64,6 @@ import {
     getGlobalSearch,
     getMistriJobs,
 } from "../controllers/adminController";
-import {
-    // Service Categories (Level 1)
-    getAllServiceCategories,
-    createServiceCategory,
-    updateServiceCategory,
-    deleteServiceCategory,
-    getServiceCategoryById,
-    // Platform Services (Level 2)
-    getAllPlatformServices,
-    createPlatformService,
-    updatePlatformService,
-    deletePlatformService,
-    getPlatformServiceById,
-    getPlatformServicesStats,
-    togglePlatformServiceActive,
-    togglePlatformServicePopular,
-    bulkDeletePlatformServices,
-    getPlatformServicesByCategory,
-    deactivatePlatformService,
-    reactivatePlatformService,
-    // Service Items (Level 3)
-    getServiceItems,
-    getServiceItemById,
-    createServiceItem,
-    updateServiceItem,
-    deleteServiceItem,
-    bulkDeleteServiceItems,
-    toggleServiceItemPopular,
-    toggleServiceItemActive,
-    getServiceItemsStats,
-} from "../controllers/adminServiceController";
 import {
     getAdminRatings,
     approveRating,
@@ -136,25 +118,21 @@ import {
 const router = express.Router();
 
 // ============================================
-// PUBLIC ADMIN AUTH ROUTES (no token required)
+// PUBLIC ADMIN AUTH ROUTES
 // ============================================
-
-// OTP-based login (legacy)
 router.post("/auth/send-otp", adminSendOtp);
 router.post("/auth/verify-otp", adminVerifyOtp);
 router.post("/auth/logout", adminLogout);
-
-// Password-based login with 2FA (new)
 router.post("/auth/login-with-password", adminLoginWithPassword);
 router.post("/auth/check-two-factor-status", checkAdminTwoFactorStatus);
 
 // ============================================
-// PROTECTED ROUTES (authentication + admin role required)
+// PROTECTED ROUTES
 // ============================================
 router.use(authenticate, requireAdmin);
 
 // ============================================
-// 2FA MANAGEMENT (requires authentication)
+// 2FA MANAGEMENT
 // ============================================
 router.post("/two-factor/setup", setupTwoFactor);
 router.post("/two-factor/enable", enableTwoFactor);
@@ -163,12 +141,8 @@ router.post("/two-factor/disable", disableTwoFactor);
 // ============================================
 // CURRENT ADMIN IDENTITY
 // ============================================
-
-// Current admin identity + effective permissions
 router.get("/me", getMe);
 router.patch("/me", updateMe);
-
-// Global search (Cmd-K) — any admin; destination pages enforce their own perms
 router.get("/search", getGlobalSearch);
 
 // ============================================
@@ -206,59 +180,34 @@ router.patch("/mistris/:userId/toggle-featured", requirePermission("mistris.mana
 router.patch("/mistris/:userId/update-service", requirePermission("mistris.manage"), updateMistriService);
 router.patch("/mistris/:userId/approve", requirePermission("mistris.manage"), approveMistri);
 router.patch("/mistris/:userId/reject", requirePermission("mistris.manage"), rejectMistri);
+// ============================================
+// SERVICE HIERARCHY - LEVEL 1: CATEGORIES
+// ============================================
+router.get("/service-categories", requirePermission("services.manage"), categoryController.getAllCategories);
+router.get("/service-categories/:id", requirePermission("services.manage"), categoryController.getCategoryById);
+router.post("/service-categories", requirePermission("services.manage"), categoryController.createCategory);
+router.patch("/service-categories/:id", requirePermission("services.manage"), categoryController.updateCategory);
+router.delete("/service-categories/:id", requirePermission("services.manage"), categoryController.deleteCategory);
 
 // ============================================
-// SERVICE CATEGORIES (Level 1)
+// SERVICE HIERARCHY - LEVEL 2: SUB-CATEGORIES
 // ============================================
-router.get("/service-categories", requirePermission("services.manage"), getAllServiceCategories);
-router.get("/service-categories/:id", requirePermission("services.manage"), getServiceCategoryById);
-router.post("/service-categories", requirePermission("services.manage"), createServiceCategory);
-router.patch("/service-categories/:id", requirePermission("services.manage"), updateServiceCategory);
-router.delete("/service-categories/:id", requirePermission("services.manage"), deleteServiceCategory);
-
-// ============================================
-// PLATFORM SERVICES (Level 2 - Sub-Categories)
-// ============================================
-// GET endpoints
-router.get("/platform-services", requirePermission("services.manage"), getAllPlatformServices);
-router.get("/platform-services/stats", requirePermission("services.manage"), getPlatformServicesStats);
-router.get("/platform-services/:id", requirePermission("services.manage"), getPlatformServiceById);
-router.get("/platform-services/category/:categoryId", requirePermission("services.manage"), getPlatformServicesByCategory);
-
-// POST endpoints
-router.post("/platform-services", requirePermission("services.manage"), createPlatformService);
-router.post("/platform-services/bulk-delete", requirePermission("services.manage"), bulkDeletePlatformServices);
-
-// PATCH endpoints
-router.patch("/platform-services/:id", requirePermission("services.manage"), updatePlatformService);
-router.patch("/platform-services/:id/toggle-active", requirePermission("services.manage"), togglePlatformServiceActive);
-router.patch("/platform-services/:id/toggle-popular", requirePermission("services.manage"), togglePlatformServicePopular);
-router.patch("/platform-services/:id/deactivate", requirePermission("services.manage"), deactivatePlatformService);
-router.patch("/platform-services/:id/reactivate", requirePermission("services.manage"), reactivatePlatformService);
-
-// DELETE endpoint - PERMANENT DELETE
-router.delete("/platform-services/:id", requirePermission("services.manage"), deletePlatformService);
+router.get("/sub-categories", requirePermission("services.manage"), subCategoryController.getAllSubCategories);
+router.get("/sub-categories/:id", requirePermission("services.manage"), subCategoryController.getSubCategoryById);
+router.post("/sub-categories", requirePermission("services.manage"), subCategoryController.createSubCategory);
+router.patch("/sub-categories/:id", requirePermission("services.manage"), subCategoryController.updateSubCategory);
+router.delete("/sub-categories/:id", requirePermission("services.manage"), subCategoryController.deleteSubCategory);
 
 // ============================================
-// SERVICE ITEMS (Level 3 - Individual Services)
+// SERVICE HIERARCHY - LEVEL 3: SERVICE ITEMS
 // ============================================
-// GET endpoints
-router.get("/service-items", requirePermission("services.manage"), getServiceItems);
-router.get("/service-items/stats", requirePermission("services.manage"), getServiceItemsStats);
-router.get("/service-items/:id", requirePermission("services.manage"), getServiceItemById);
-
-// POST endpoints
-router.post("/service-items", requirePermission("services.manage"), createServiceItem);
-router.post("/service-items/bulk-delete", requirePermission("services.manage"), bulkDeleteServiceItems);
-
-// PATCH endpoints
-router.patch("/service-items/:id", requirePermission("services.manage"), updateServiceItem);
-router.patch("/service-items/:id/toggle-popular", requirePermission("services.manage"), toggleServiceItemPopular);
-router.patch("/service-items/:id/toggle-active", requirePermission("services.manage"), toggleServiceItemActive);
-
-// DELETE endpoint
-router.delete("/service-items/:id", requirePermission("services.manage"), deleteServiceItem);
-
+router.get("/sub-category-items", requirePermission("services.manage"), serviceSubCategoryItemController.getAllServiceItems);
+router.get("/sub-category-items/:id", requirePermission("services.manage"), serviceSubCategoryItemController.getServiceItemById);
+router.post("/sub-category-items", requirePermission("services.manage"), serviceSubCategoryItemController.createServiceItem);
+router.patch("/sub-category-items/:id", requirePermission("services.manage"), serviceSubCategoryItemController.updateServiceItem);
+router.delete("/sub-category-items/:id", requirePermission("services.manage"), serviceSubCategoryItemController.deleteServiceItem);
+router.patch("/sub-category-items/:id/toggle-popular", requirePermission("services.manage"), serviceSubCategoryItemController.toggleServiceItemPopular);
+router.patch("/sub-category-items/:id/toggle-active", requirePermission("services.manage"), serviceSubCategoryItemController.toggleServiceItemActive);
 // ============================================
 // CDN ASSET UPLOAD
 // ============================================
@@ -286,7 +235,7 @@ router.post("/ratings/:id/approve", requirePermission("ratings.moderate"), appro
 router.post("/ratings/:id/reject", requirePermission("ratings.moderate"), rejectRating);
 
 // ============================================
-// SERVICE REQUESTS (OPS CONSOLE)
+// SERVICE REQUESTS
 // ============================================
 router.get("/service-requests/counts", requirePermission("requests.view"), getServiceRequestCounts);
 router.get("/service-requests/assignable-mistris", requirePermission("requests.assign"), getAssignableMistris);
@@ -315,14 +264,14 @@ router.get("/sms-stats", requirePermission("sms.view"), getSmsStats);
 router.get("/sms-logs", requirePermission("sms.view"), getSmsLogs);
 
 // ============================================
-// BROADCAST (ENGAGEMENT)
+// BROADCAST
 // ============================================
 router.get("/broadcast/segments", requirePermission("broadcast.send"), getBroadcastSegments);
 router.get("/broadcast/history", requirePermission("broadcast.send"), getBroadcastHistory);
 router.post("/broadcast/send", requirePermission("broadcast.send"), sendBroadcast);
 
 // ============================================
-// EXPENSES (FINANCE)
+// EXPENSES
 // ============================================
 router.get("/expenses/report", requirePermission("expenses.view"), getExpenseReport);
 router.get("/expenses", requirePermission("expenses.view"), getExpenses);
@@ -331,12 +280,12 @@ router.patch("/expenses/:id", requirePermission("expenses.manage"), updateExpens
 router.delete("/expenses/:id", requirePermission("expenses.manage"), deleteExpense);
 
 // ============================================
-// PROFIT & LOSS STATEMENT
+// PROFIT & LOSS
 // ============================================
 router.get("/pnl", requirePermission("expenses.view"), getPnlStatement);
 
 // ============================================
-// PAYOUTS (COMMISSION SETTLEMENTS)
+// PAYOUTS
 // ============================================
 router.get("/payouts/report", requirePermission("payouts.view"), getPayoutReport);
 router.get("/payouts/providers", requirePermission("payouts.view"), getPayoutProviders);
@@ -347,7 +296,7 @@ router.patch("/payouts/:id/collect", requirePermission("payouts.manage"), collec
 router.patch("/payouts/:id/revert", requirePermission("payouts.manage"), revertPayout);
 
 // ============================================
-// EMPLOYEES (RBAC - ADMIN TEAM MANAGEMENT)
+// EMPLOYEES (RBAC)
 // ============================================
 router.get("/employees/roles-meta", requirePermission("employees.view"), getRolesMeta);
 router.get("/employees", requirePermission("employees.view"), getEmployees);

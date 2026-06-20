@@ -1,3 +1,5 @@
+// backend/src/db/schema.ts
+
 import {
   pgTable,
   text,
@@ -11,6 +13,8 @@ import {
   decimal,
   jsonb,
   index,
+  unique,
+  numeric,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { relations } from "drizzle-orm";
@@ -18,17 +22,17 @@ import { relations } from "drizzle-orm";
 export const userRoleEnum = pgEnum("user_role", ["user", "mistri", "admin"]);
 export const serviceTypeEnum = pgEnum("service_type", ["electrician", "plumber"]);
 export const locationSourceEnum = pgEnum("location_source", ["gps", "drag", "admin_manual"]);
-// db/schema.ts - Update the enum
 export const serviceRequestStatusEnum = pgEnum("service_request_status", [
   "pending_approval",
-  "pending", "assigned",
+  "pending",
+  "assigned",
   "canceled",
   "completed"
 ]);
 export const availabilityStatusEnum = pgEnum("availability_status", ["available", "unavailable", "on_work_available"]);
 export const mistriApprovalStatusEnum = pgEnum("mistri_approval_status", ["pending", "approved", "rejected"]);
 
-// Add to users table definition
+// Users table
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   phoneNumber: varchar("phone_number", { length: 20 }).unique().notNull(),
@@ -53,6 +57,7 @@ export const users = pgTable("users", {
   twoFaEnabled: boolean("two_fa_enabled").default(false),
   twoFaBackupCodes: text("two_fa_backup_codes").array(),
 });
+
 export const loginAttempts = pgTable("login_attempts", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   phoneNumber: varchar("phone_number", { length: 20 }).notNull(),
@@ -62,12 +67,79 @@ export const loginAttempts = pgTable("login_attempts", {
   userAgent: text("user_agent"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
+
 export const otps = pgTable("otps", {
   id: serial("id").primaryKey(),
   phone: varchar("phone", { length: 256 }).notNull(),
   otp: varchar("otp", { length: 6 }).notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 });
+
+// ============================================
+// LEVEL 1: SERVICE CATEGORIES
+// ============================================
+
+export const serviceCategories = pgTable("service_categories", {
+  id: serial("id").primaryKey(),
+  name: varchar("name", { length: 100 }).notNull().unique(),
+  description: text("description"),
+  iconUrl: text("icon_url"),
+  iconColor: varchar("icon_color", { length: 20 }).default('#1890ff'),
+  isActive: boolean("is_active").default(true).notNull(),
+  displayOrder: integer("display_order").default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+// ============================================
+// LEVEL 2: SERVICE SUB-CATEGORIES
+// ============================================
+
+export const serviceSubCategories = pgTable("service_sub_categories", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  categoryId: integer("category_id").notNull().references(() => serviceCategories.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 100 }).notNull(),
+  description: text("description"),
+  imageUrl: text("image_url"),
+  isActive: boolean("is_active").default(true).notNull(),
+  isPopular: boolean("is_popular").default(false).notNull(),
+  displayOrder: integer("display_order").default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  uniqueCategoryName: unique("service_sub_categories_category_id_name_unique").on(table.categoryId, table.name),
+  categoryIdIdx: index("idx_service_sub_categories_category_id").on(table.categoryId),
+  isActiveIdx: index("idx_service_sub_categories_is_active").on(table.isActive),
+  isPopularIdx: index("idx_service_sub_categories_is_popular").on(table.isPopular),
+}));
+
+// ============================================
+// LEVEL 3: SERVICE ITEMS
+// ============================================
+
+export const serviceSubCategoryItems = pgTable("service_sub_category_items", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  subCategoryId: uuid("sub_category_id").notNull().references(() => serviceSubCategories.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  price: numeric("price", { precision: 10, scale: 2 }).notNull(),
+  durationMinutes: integer("duration_minutes"),
+  isActive: boolean("is_active").default(true).notNull(),
+  isPopular: boolean("is_popular").default(false).notNull(),
+  imageUrl: text("image_url"),
+  displayOrder: integer("display_order").default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  uniqueSubCategoryName: unique("service_sub_category_items_sub_category_id_name_unique").on(table.subCategoryId, table.name),
+  subCategoryIdIdx: index("idx_service_sub_category_items_sub_category_id").on(table.subCategoryId),
+  isActiveIdx: index("idx_service_sub_category_items_is_active").on(table.isActive),
+  isPopularIdx: index("idx_service_sub_category_items_is_popular").on(table.isPopular),
+}));
+
+// ============================================
+// LEGACY TABLES (Kept for backward compatibility)
+// ============================================
 
 export const services = pgTable("services", {
   id: serial("id").primaryKey(),
@@ -81,6 +153,38 @@ export const services = pgTable("services", {
   iconColor: varchar("icon_color", { length: 20 }).default('#1890ff'),
 });
 
+export const platformServices = pgTable("platform_services", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  serviceId: integer("service_id").notNull().references(() => services.id),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  price: decimal("price", { precision: 10, scale: 2 }).notNull(),
+  imageUrl: text("image_url"),
+  isActive: boolean("is_active").default(true).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  duration_minutes: integer("duration_minutes"),
+  category: varchar("category", { length: 100 }),
+  thumbnail_url: text("thumbnail_url"),
+  isPopular: boolean("is_popular").default(false).notNull(),
+  is_featured: boolean("is_featured").default(false),
+});
+
+// Legacy service items (linked to platformServices)
+export const serviceItems = pgTable("service_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  platformServiceId: uuid("platform_service_id").notNull().references(() => platformServices.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(),
+  description: text("description"),
+  price: decimal("price", { precision: 10, scale: 2 }).notNull(),
+  durationMinutes: integer("duration_minutes"),
+  isActive: boolean("is_active").default(true).notNull(),
+  isPopular: boolean("is_popular").default(false).notNull(),
+  imageUrl: text("image_url"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const mistriProfiles = pgTable("mistri_profiles", {
   userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
   serviceId: integer("service_id").notNull().references(() => services.id),
@@ -89,7 +193,7 @@ export const mistriProfiles = pgTable("mistri_profiles", {
   isAvailable: boolean("is_available").default(true).notNull(),
   availabilityStatus: availabilityStatusEnum("availability_status").default("available").notNull(),
   isFeatured: boolean("is_featured").default(false).notNull(),
-  currentLocation: text("current_location"), // geography type would need extension
+  currentLocation: text("current_location"),
   averageRating: decimal("average_rating", { precision: 3, scale: 2 }).default("0.00"),
   jobsCompleted: integer("jobs_completed").default(0),
   experienceLevel: varchar("experience_level", { length: 50 }),
@@ -99,7 +203,6 @@ export const mistriProfiles = pgTable("mistri_profiles", {
   approvalStatus: mistriApprovalStatusEnum("approval_status").default("pending").notNull(),
   approvalRejectionReason: text("approval_rejection_reason"),
 });
-
 
 export const serviceRequests = pgTable("service_requests", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -112,8 +215,8 @@ export const serviceRequests = pgTable("service_requests", {
   assignedMistriId: uuid("assigned_mistri_id").references(() => users.id, { onDelete: "set null" }),
   status: serviceRequestStatusEnum("status").default("pending").notNull(),
   customerNotes: text("customer_notes"),
-  adminNotes: text("admin_notes"), // Add this field
-  scheduledTime: timestamp("scheduled_time", { withTimezone: true }), // Add this field
+  adminNotes: text("admin_notes"),
+  scheduledTime: timestamp("scheduled_time", { withTimezone: true }),
   preferCallExplanation: boolean("prefer_call_explanation").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   assignedAt: timestamp("assigned_at", { withTimezone: true }),
@@ -123,14 +226,29 @@ export const serviceRequests = pgTable("service_requests", {
   paymentAmount: decimal("payment_amount", { precision: 10, scale: 2 }),
   paidAt: timestamp("paid_at", { withTimezone: true }),
   payoutId: uuid("payout_id"),
+  commissionId: uuid("commission_id"),
 });
+
+export const serviceRequestPlatformServices = pgTable("service_request_platform_services", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  serviceRequestId: uuid("service_request_id").notNull().references(() => serviceRequests.id, { onDelete: "cascade" }),
+  platformServiceId: uuid("platform_service_id").notNull().references(() => platformServices.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  requestIdIdx: index("srps_request_id_idx").on(table.serviceRequestId),
+  serviceIdIdx: index("srps_platform_service_id_idx").on(table.platformServiceId),
+}));
+
+// ============================================
+// OTHER TABLES (Notifications, Ratings, etc.)
+// ============================================
 
 export const notifications = pgTable("notifications", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   title: varchar("title", { length: 255 }).notNull(),
   message: text("message").notNull(),
-  type: varchar("type", { length: 50 }).notNull(), // 'new_request', 'request_accepted', 'request_completed', etc.
+  type: varchar("type", { length: 50 }).notNull(),
   relatedRequestId: uuid("related_request_id").references(() => serviceRequests.id, { onDelete: "cascade" }),
   isRead: boolean("is_read").default(false).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -151,103 +269,24 @@ export const phoneChangeAttempts = pgTable("phone_change_attempts", {
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   oldPhoneNumber: varchar("old_phone_number", { length: 20 }),
   newPhoneNumber: varchar("new_phone_number", { length: 20 }).notNull(),
-  status: varchar("status", { length: 20 }).notNull(), // 'success', 'failed'
+  status: varchar("status", { length: 20 }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   userIdIdx: index("phone_change_attempts_user_id_idx").on(table.userId),
   createdAtIdx: index("phone_change_attempts_created_at_idx").on(table.createdAt),
 }));
 
-export const serviceItems = pgTable("service_items", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  platformServiceId: uuid("platform_service_id").notNull().references(() => platformServices.id, { onDelete: "cascade" }),
-  name: varchar("name", { length: 255 }).notNull(),
-  description: text("description"),
-  price: decimal("price", { precision: 10, scale: 2 }).notNull(),
-  durationMinutes: integer("duration_minutes"),
-  isActive: boolean("is_active").default(true).notNull(),
-  isPopular: boolean("is_popular").default(false).notNull(),
-  imageUrl: text("image_url"),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
-
-// Relations
-export const serviceItemsRelations = relations(serviceItems, ({ one }) => ({
-  platformService: one(platformServices, {
-    fields: [serviceItems.platformServiceId],
-    references: [platformServices.id],
-  }),
-}));
-export const platformServices = pgTable("platform_services", {
-  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  serviceId: integer("service_id").notNull().references(() => services.id),
-  name: varchar("name", { length: 255 }).notNull(),
-  description: text("description"),
-  price: decimal("price", { precision: 10, scale: 2 }).notNull(),
-  imageUrl: text("image_url"),
-  isActive: boolean("is_active").default(true).notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  // Additional fields
-  duration_minutes: integer("duration_minutes"),
-  category: varchar("category", { length: 100 }),
-  thumbnail_url: text("thumbnail_url"),
-  isPopular: boolean("is_popular").default(false).notNull(),
-  is_featured: boolean("is_featured").default(false),
-});
-
-// Mistri-specific services (individual services created by each mistri)
-export const mistriServices = pgTable("mistri_services", {
-  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  mistriId: uuid("mistri_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  name: varchar("name", { length: 255 }).notNull(),
-  description: text("description"),
-  price: decimal("price", { precision: 10, scale: 2 }).notNull(), // Price in local currency
-  imageUrl: text("image_url"),
-  isActive: boolean("is_active").default(true).notNull(),
-  needsApproval: boolean("needs_approval").default(false).notNull(), // For testing, set to false
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => ({
-  mistriIdIdx: index("mistri_services_mistri_id_idx").on(table.mistriId),
-  isActiveIdx: index("mistri_services_is_active_idx").on(table.isActive),
-}));
-
-// Junction table for service requests and Mistri Home Services (many-to-many) - DEPRECATED
-export const serviceRequestServices = pgTable("service_request_services", {
-  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  serviceRequestId: uuid("service_request_id").notNull().references(() => serviceRequests.id, { onDelete: "cascade" }),
-  mistriServiceId: uuid("mistri_service_id").notNull().references(() => mistriServices.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => ({
-  requestIdIdx: index("service_request_services_request_id_idx").on(table.serviceRequestId),
-  serviceIdIdx: index("service_request_services_service_id_idx").on(table.mistriServiceId),
-}));
-
-// Junction table for service requests and Platform Services (many-to-many)
-export const serviceRequestPlatformServices = pgTable("service_request_platform_services", {
-  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  serviceRequestId: uuid("service_request_id").notNull().references(() => serviceRequests.id, { onDelete: "cascade" }),
-  platformServiceId: uuid("platform_service_id").notNull().references(() => platformServices.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => ({
-  requestIdIdx: index("srps_request_id_idx").on(table.serviceRequestId),
-  serviceIdIdx: index("srps_platform_service_id_idx").on(table.platformServiceId),
-}));
-
-// Ratings and reviews
 export const ratings = pgTable("ratings", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  serviceRequestId: uuid("service_request_id").notNull().unique().references(() => serviceRequests.id, { onDelete: "cascade" }), // One rating per request
+  serviceRequestId: uuid("service_request_id").notNull().unique().references(() => serviceRequests.id, { onDelete: "cascade" }),
   customerId: uuid("customer_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   mistriId: uuid("mistri_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  rating: integer("rating").notNull(), // 1-5 stars
-  review: text("review"), // Optional text review
-  isApproved: boolean("is_approved").default(false).notNull(), // Admin approval status
-  approvedBy: uuid("approved_by").references(() => users.id, { onDelete: "set null" }), // Admin who approved
-  approvedAt: timestamp("approved_at", { withTimezone: true }), // When approved
-  rejectionReason: text("rejection_reason"), // Why rejected (if applicable)
+  rating: integer("rating").notNull(),
+  review: text("review"),
+  isApproved: boolean("is_approved").default(false).notNull(),
+  approvedBy: uuid("approved_by").references(() => users.id, { onDelete: "set null" }),
+  approvedAt: timestamp("approved_at", { withTimezone: true }),
+  rejectionReason: text("rejection_reason"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
@@ -257,17 +296,16 @@ export const ratings = pgTable("ratings", {
   isApprovedIdx: index("ratings_is_approved_idx").on(table.isApproved),
 }));
 
-// Audit logs for tracking all important actions
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  entityType: varchar("entity_type", { length: 50 }).notNull(), // 'service_request', 'user', 'rating', etc.
-  entityId: uuid("entity_id").notNull(), // ID of the entity being modified
-  action: varchar("action", { length: 50 }).notNull(), // 'status_change', 'unpaid_toggle', 'cancel', 'decline', etc.
+  entityType: varchar("entity_type", { length: 50 }).notNull(),
+  entityId: uuid("entity_id").notNull(),
+  action: varchar("action", { length: 50 }).notNull(),
   performedBy: uuid("performed_by").notNull().references(() => users.id, { onDelete: "cascade" }),
-  performedByRole: userRoleEnum("performed_by_role").notNull(), // Role at time of action
-  oldValue: jsonb("old_value"), // Previous state
-  newValue: jsonb("new_value"), // New state
-  metadata: jsonb("metadata"), // Additional context (IP, user agent, etc.)
+  performedByRole: userRoleEnum("performed_by_role").notNull(),
+  oldValue: jsonb("old_value"),
+  newValue: jsonb("new_value"),
+  metadata: jsonb("metadata"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   entityTypeIdx: index("audit_logs_entity_type_idx").on(table.entityType),
@@ -276,7 +314,6 @@ export const auditLogs = pgTable("audit_logs", {
   createdAtIdx: index("audit_logs_created_at_idx").on(table.createdAt),
 }));
 
-// Hero banners shown on customer home screen
 export const heroBanners = pgTable("hero_banners", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   title: varchar("title", { length: 255 }),
@@ -287,7 +324,6 @@ export const heroBanners = pgTable("hero_banners", {
   isActive: boolean("is_active").default(true).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  // Add these missing fields
   adType: varchar("ad_type", { length: 10 }).default('both'),
   videoUrl: text("video_url"),
 }, (table) => ({
@@ -296,7 +332,6 @@ export const heroBanners = pgTable("hero_banners", {
   adTypeIdx: index("hero_banners_ad_type_idx").on(table.adType),
 }));
 
-// SMS log — one row per outbound SMS sent (or attempted)
 export const smsTypeEnum = pgEnum("sms_type", [
   "otp_login",
   "otp_phone_change",
@@ -305,13 +340,14 @@ export const smsTypeEnum = pgEnum("sms_type", [
   "service_accepted",
   "service_completed",
   "mistri_approved",
+  "broadcast",
 ]);
 
 export const smsLogs = pgTable("sms_logs", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   to: varchar("to", { length: 20 }).notNull(),
   type: smsTypeEnum("type").notNull(),
-  status: varchar("status", { length: 10 }).notNull(), // 'success' | 'failed'
+  status: varchar("status", { length: 10 }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   typeIdx: index("sms_logs_type_idx").on(table.type),
@@ -319,17 +355,15 @@ export const smsLogs = pgTable("sms_logs", {
   createdAtIdx: index("sms_logs_created_at_idx").on(table.createdAt),
 }));
 
-// Business operating expenses recorded by admin (rent, salaries, marketing, etc.)
-// Category is a curated varchar set (validated in the app) — kept flexible to avoid enum migrations.
 export const expenses = pgTable("expenses", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   title: varchar("title", { length: 255 }).notNull(),
   category: varchar("category", { length: 40 }).default("misc").notNull(),
-  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(), // NPR
-  paidTo: varchar("paid_to", { length: 255 }), // vendor / payee
-  paymentMethod: varchar("payment_method", { length: 30 }), // cash | bank | wallet | online
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  paidTo: varchar("paid_to", { length: 255 }),
+  paymentMethod: varchar("payment_method", { length: 30 }),
   note: text("note"),
-  incurredAt: timestamp("incurred_at", { withTimezone: true }).defaultNow().notNull(), // business date of the expense
+  incurredAt: timestamp("incurred_at", { withTimezone: true }).defaultNow().notNull(),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -339,28 +373,24 @@ export const expenses = pgTable("expenses", {
   createdAtIdx: index("expenses_created_at_idx").on(table.createdAt),
 }));
 
-// Platform key/value settings (e.g. commission_rate). Small, app-managed.
 export const appSettings = pgTable("app_settings", {
   key: varchar("key", { length: 64 }).primaryKey(),
   value: text("value").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-// Provider commission settlements. In ServeX's cash flow the mistri collects the
-// full job amount and OWES the platform its commission; a payout batches a set of
-// completed+paid jobs and records the commission the platform collects from them.
 export const payouts = pgTable("payouts", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   mistriId: uuid("mistri_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   jobsCount: integer("jobs_count").notNull(),
-  grossAmount: decimal("gross_amount", { precision: 12, scale: 2 }).notNull(), // sum of job payment amounts
-  commissionRate: decimal("commission_rate", { precision: 5, scale: 2 }).notNull(), // % snapshot at settlement time
-  commissionAmount: decimal("commission_amount", { precision: 12, scale: 2 }).notNull(), // platform's cut (collected from mistri)
-  netAmount: decimal("net_amount", { precision: 12, scale: 2 }).notNull(), // gross - commission (mistri keeps this)
-  status: varchar("status", { length: 20 }).default("pending").notNull(), // 'pending' | 'collected'
+  grossAmount: decimal("gross_amount", { precision: 12, scale: 2 }).notNull(),
+  commissionRate: decimal("commission_rate", { precision: 5, scale: 2 }).notNull(),
+  commissionAmount: decimal("commission_amount", { precision: 12, scale: 2 }).notNull(),
+  netAmount: decimal("net_amount", { precision: 12, scale: 2 }).notNull(),
+  status: varchar("status", { length: 20 }).default("pending").notNull(),
   note: text("note"),
-  periodEnd: timestamp("period_end", { withTimezone: true }), // latest job paidAt included
-  settledAt: timestamp("settled_at", { withTimezone: true }), // when marked collected
+  periodEnd: timestamp("period_end", { withTimezone: true }),
+  settledAt: timestamp("settled_at", { withTimezone: true }),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
@@ -369,21 +399,17 @@ export const payouts = pgTable("payouts", {
   createdAtIdx: index("payouts_created_at_idx").on(table.createdAt),
 }));
 
-// Notification preferences for users
 export const notificationPreferences = pgTable("notification_preferences", {
   userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
-  pushEnabled: boolean("push_enabled").default(true).notNull(), // Push notifications enabled
-  smsEnabled: boolean("sms_enabled").default(true).notNull(), // SMS notifications enabled
-  quietHoursStart: varchar("quiet_hours_start", { length: 5 }), // "22:00" format (HH:mm)
-  quietHoursEnd: varchar("quiet_hours_end", { length: 5 }), // "08:00" format (HH:mm)
-  typeSettings: jsonb("type_settings"), // Per-notification-type settings { "new_request": { push: true, sms: true }, ... }
+  pushEnabled: boolean("push_enabled").default(true).notNull(),
+  smsEnabled: boolean("sms_enabled").default(true).notNull(),
+  quietHoursStart: varchar("quiet_hours_start", { length: 5 }),
+  quietHoursEnd: varchar("quiet_hours_end", { length: 5 }),
+  typeSettings: jsonb("type_settings"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-// Admin-panel team members (RBAC). An "employee" is a users row with
-// role='admin' PLUS this profile carrying their staff role + permission set.
-// An admin WITHOUT a profile is treated as super-admin (legacy full access).
 export const staffRoleEnum = pgEnum("staff_role", [
   "super_admin",
   "manager",
@@ -395,11 +421,34 @@ export const staffRoleEnum = pgEnum("staff_role", [
 export const employeeProfiles = pgTable("employee_profiles", {
   userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
   staffRole: staffRoleEnum("staff_role").default("support").notNull(),
-  permissions: jsonb("permissions").$type<string[]>().default([]).notNull(), // explicit permission keys; ['*'] = all
-  designation: varchar("designation", { length: 100 }), // optional job title
+  permissions: jsonb("permissions").$type<string[]>().default([]).notNull(),
+  designation: varchar("designation", { length: 100 }),
   createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   staffRoleIdx: index("employee_profiles_staff_role_idx").on(table.staffRole),
+}));
+
+// ============================================
+// RELATIONS
+// ============================================
+
+export const serviceCategoriesRelations = relations(serviceCategories, ({ many }) => ({
+  subCategories: many(serviceSubCategories),
+}));
+
+export const serviceSubCategoriesRelations = relations(serviceSubCategories, ({ one, many }) => ({
+  category: one(serviceCategories, {
+    fields: [serviceSubCategories.categoryId],
+    references: [serviceCategories.id],
+  }),
+  items: many(serviceSubCategoryItems),
+}));
+
+export const serviceSubCategoryItemsRelations = relations(serviceSubCategoryItems, ({ one }) => ({
+  subCategory: one(serviceSubCategories, {
+    fields: [serviceSubCategoryItems.subCategoryId],
+    references: [serviceSubCategories.id],
+  }),
 }));

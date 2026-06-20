@@ -1,8 +1,9 @@
-// backend/src/controllers/serviceItemController.ts
+// backend/src/controllers/serviceSubCategoryItemController.ts
+
 import { Request, Response } from "express";
 import { db } from "../db";
-import { serviceItems, serviceSubCategories } from "../db/schema";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { serviceSubCategoryItems, serviceSubCategories } from "../db/schema";
+import { eq, and, sql } from "drizzle-orm";
 import { z } from "zod";
 import { createAuditLog } from "../services/auditLog";
 
@@ -22,34 +23,35 @@ export const getAllServiceItems = async (req: Request, res: Response) => {
   try {
     const subCategoryId = req.query.subCategoryId as string;
 
+    // Build conditions array
     const conditions = [];
     if (subCategoryId) {
-      conditions.push(eq(serviceItems.subCategoryId, subCategoryId));
+      conditions.push(eq(serviceSubCategoryItems.subCategoryId, subCategoryId));
     }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
     const items = await db
       .select({
-        id: serviceItems.id,
-        subCategoryId: serviceItems.subCategoryId,
-        name: serviceItems.name,
-        description: serviceItems.description,
-        price: serviceItems.price,
-        durationMinutes: serviceItems.durationMinutes,
-        isActive: serviceItems.isActive,
-        isPopular: serviceItems.isPopular,
-        imageUrl: serviceItems.imageUrl,
-        displayOrder: serviceItems.displayOrder,
-        createdAt: serviceItems.createdAt,
-        updatedAt: serviceItems.updatedAt,
+        id: serviceSubCategoryItems.id,
+        subCategoryId: serviceSubCategoryItems.subCategoryId,
+        name: serviceSubCategoryItems.name,
+        description: serviceSubCategoryItems.description,
+        price: serviceSubCategoryItems.price,
+        durationMinutes: serviceSubCategoryItems.durationMinutes,
+        isActive: serviceSubCategoryItems.isActive,
+        isPopular: serviceSubCategoryItems.isPopular,
+        imageUrl: serviceSubCategoryItems.imageUrl,
+        displayOrder: serviceSubCategoryItems.displayOrder,
+        createdAt: serviceSubCategoryItems.createdAt,
+        updatedAt: serviceSubCategoryItems.updatedAt,
         subCategoryName: serviceSubCategories.name,
         categoryId: serviceSubCategories.categoryId,
       })
-      .from(serviceItems)
-      .leftJoin(serviceSubCategories, eq(serviceItems.subCategoryId, serviceSubCategories.id))
+      .from(serviceSubCategoryItems)
+      .leftJoin(serviceSubCategories, eq(serviceSubCategoryItems.subCategoryId, serviceSubCategories.id))
       .where(whereClause)
-      .orderBy(serviceItems.displayOrder, serviceItems.name);
+      .orderBy(serviceSubCategoryItems.displayOrder, serviceSubCategoryItems.name);
 
     return res.json({ success: true, serviceItems: items });
   } catch (error) {
@@ -63,8 +65,8 @@ export const getServiceItemById = async (req: Request, res: Response) => {
     const id = req.params.id;
     const [item] = await db
       .select()
-      .from(serviceItems)
-      .where(eq(serviceItems.id, id))
+      .from(serviceSubCategoryItems)
+      .where(eq(serviceSubCategoryItems.id, id))
       .limit(1);
 
     if (!item) {
@@ -85,7 +87,6 @@ export const createServiceItem = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
     }
 
-    // Verify sub-category exists
     const [subCategory] = await db
       .select()
       .from(serviceSubCategories)
@@ -96,10 +97,15 @@ export const createServiceItem = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: "Sub-category not found" });
     }
 
-    const [created] = await db.insert(serviceItems).values({
-      ...parsed.data,
+    const [created] = await db.insert(serviceSubCategoryItems).values({
+      subCategoryId: parsed.data.subCategoryId,
+      name: parsed.data.name,
+      description: parsed.data.description || null,
+      price: String(parsed.data.price),
+      durationMinutes: parsed.data.durationMinutes || null,
       isActive: parsed.data.isActive ?? true,
       isPopular: parsed.data.isPopular ?? false,
+      imageUrl: parsed.data.imageUrl || null,
       displayOrder: parsed.data.displayOrder ?? 0,
     }).returning();
 
@@ -113,7 +119,13 @@ export const createServiceItem = async (req: Request, res: Response) => {
     });
 
     return res.status(201).json({ success: true, serviceItem: created });
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.code === "23505") {
+      return res.status(409).json({ 
+        success: false, 
+        message: "Service item with this name already exists in this sub-category" 
+      });
+    }
     console.error("Error creating service item:", error);
     return res.status(500).json({ success: false, message: "Failed to create service item" });
   }
@@ -127,15 +139,26 @@ export const updateServiceItem = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
     }
 
-    const [existing] = await db.select().from(serviceItems).where(eq(serviceItems.id, id)).limit(1);
+    const [existing] = await db.select().from(serviceSubCategoryItems).where(eq(serviceSubCategoryItems.id, id)).limit(1);
     if (!existing) {
       return res.status(404).json({ success: false, message: "Service item not found" });
     }
 
+    const updateData: any = { updatedAt: new Date() };
+    if (parsed.data.subCategoryId !== undefined) updateData.subCategoryId = parsed.data.subCategoryId;
+    if (parsed.data.name !== undefined) updateData.name = parsed.data.name;
+    if (parsed.data.description !== undefined) updateData.description = parsed.data.description;
+    if (parsed.data.price !== undefined) updateData.price = String(parsed.data.price);
+    if (parsed.data.durationMinutes !== undefined) updateData.durationMinutes = parsed.data.durationMinutes;
+    if (parsed.data.isActive !== undefined) updateData.isActive = parsed.data.isActive;
+    if (parsed.data.isPopular !== undefined) updateData.isPopular = parsed.data.isPopular;
+    if (parsed.data.imageUrl !== undefined) updateData.imageUrl = parsed.data.imageUrl;
+    if (parsed.data.displayOrder !== undefined) updateData.displayOrder = parsed.data.displayOrder;
+
     const [updated] = await db
-      .update(serviceItems)
-      .set({ ...parsed.data, updatedAt: new Date() })
-      .where(eq(serviceItems.id, id))
+      .update(serviceSubCategoryItems)
+      .set(updateData)
+      .where(eq(serviceSubCategoryItems.id, id))
       .returning();
 
     await createAuditLog({
@@ -158,12 +181,12 @@ export const updateServiceItem = async (req: Request, res: Response) => {
 export const deleteServiceItem = async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
-    const [existing] = await db.select().from(serviceItems).where(eq(serviceItems.id, id)).limit(1);
+    const [existing] = await db.select().from(serviceSubCategoryItems).where(eq(serviceSubCategoryItems.id, id)).limit(1);
     if (!existing) {
       return res.status(404).json({ success: false, message: "Service item not found" });
     }
 
-    await db.delete(serviceItems).where(eq(serviceItems.id, id));
+    await db.delete(serviceSubCategoryItems).where(eq(serviceSubCategoryItems.id, id));
 
     await createAuditLog({
       entityType: "service_item",
@@ -184,16 +207,16 @@ export const deleteServiceItem = async (req: Request, res: Response) => {
 export const toggleServiceItemPopular = async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
-    const [existing] = await db.select().from(serviceItems).where(eq(serviceItems.id, id)).limit(1);
+    const [existing] = await db.select().from(serviceSubCategoryItems).where(eq(serviceSubCategoryItems.id, id)).limit(1);
     if (!existing) {
       return res.status(404).json({ success: false, message: "Service item not found" });
     }
 
     const newStatus = !existing.isPopular;
     const [updated] = await db
-      .update(serviceItems)
+      .update(serviceSubCategoryItems)
       .set({ isPopular: newStatus, updatedAt: new Date() })
-      .where(eq(serviceItems.id, id))
+      .where(eq(serviceSubCategoryItems.id, id))
       .returning();
 
     await createAuditLog({
@@ -216,16 +239,16 @@ export const toggleServiceItemPopular = async (req: Request, res: Response) => {
 export const toggleServiceItemActive = async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
-    const [existing] = await db.select().from(serviceItems).where(eq(serviceItems.id, id)).limit(1);
+    const [existing] = await db.select().from(serviceSubCategoryItems).where(eq(serviceSubCategoryItems.id, id)).limit(1);
     if (!existing) {
       return res.status(404).json({ success: false, message: "Service item not found" });
     }
 
     const newStatus = !existing.isActive;
     const [updated] = await db
-      .update(serviceItems)
+      .update(serviceSubCategoryItems)
       .set({ isActive: newStatus, updatedAt: new Date() })
-      .where(eq(serviceItems.id, id))
+      .where(eq(serviceSubCategoryItems.id, id))
       .returning();
 
     await createAuditLog({
