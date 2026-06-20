@@ -1,21 +1,34 @@
+// src/controllers/uploadController.ts
 import { Request, Response } from "express";
 import { createClient } from "@supabase/supabase-js";
 import sharp from "sharp";
 import { z } from "zod";
+import { logger } from "../utils/logger";
 
-const supabase = createClient(
-    process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_KEY!
-);
+// Initialize Supabase client conditionally
+let supabase: ReturnType<typeof createClient> | null = null;
 
-// Update the enum to include 'platform-services'
+try {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+    
+    if (supabaseUrl && supabaseKey && supabaseUrl !== 'your-supabase-url' && supabaseKey !== 'your-supabase-key') {
+        supabase = createClient(supabaseUrl, supabaseKey);
+        logger.info('Supabase client initialized for uploads');
+    } else {
+        logger.warn('Supabase environment variables not set. Upload features disabled.');
+    }
+} catch (error) {
+    logger.error('Failed to initialize Supabase client for uploads:', error);
+}
+
 const uploadSchema = z.object({
     fileBase64: z.string().min(1),
     folder: z.enum([
         "banners", 
         "service-categories", 
         "service-icons", 
-        "platform-services",  // Add this line
+        "platform-services",
         "mistri-profiles", 
         "misc"
     ]).optional().default("misc"),
@@ -46,6 +59,17 @@ export const uploadAsset = async (req: Request, res: Response): Promise<Response
             return res.status(413).json({ 
                 success: false, 
                 message: "File too large. Max size is 5MB." 
+            });
+        }
+
+        // Check if Supabase is available
+        if (!supabase) {
+            logger.warn('[DEV] Supabase not available. Returning placeholder URL.');
+            return res.status(201).json({
+                success: true,
+                cdnUrl: `https://placehold.co/200x200/2196F3/FFFFFF?text=Upload+${Date.now()}`,
+                isPlaceholder: true,
+                message: "Placeholder URL returned (Supabase not configured)"
             });
         }
 

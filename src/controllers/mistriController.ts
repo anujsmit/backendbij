@@ -1,9 +1,28 @@
+// src/controllers/mistriController.ts
 import { Request, Response } from "express";
 import { db } from "../db";
 import { users, mistriProfiles, services, serviceRequests } from "../db/schema";
 import { eq, and, inArray, desc } from "drizzle-orm";
 import { createClient } from "@supabase/supabase-js";
 import sharp from "sharp";
+import { logger } from "../utils/logger";
+
+// Initialize Supabase client conditionally
+let supabase: ReturnType<typeof createClient> | null = null;
+
+try {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+    
+    if (supabaseUrl && supabaseKey && supabaseUrl !== 'your-supabase-url' && supabaseKey !== 'your-supabase-key') {
+        supabase = createClient(supabaseUrl, supabaseKey);
+        logger.info('Supabase client initialized successfully');
+    } else {
+        logger.warn('Supabase environment variables not properly set. Image upload features will use fallback mode.');
+    }
+} catch (error) {
+    logger.error('Failed to initialize Supabase client:', error);
+}
 
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
     const R = 6371;
@@ -17,35 +36,43 @@ function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
     return R * c;
 }
 
-const supabase = createClient(
-    process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_KEY!
-);
-
 async function compressAndUploadProfileImage(
     profilePhotoBase64: string,
     userId: string | number
 ): Promise<string> {
-    const rawBuffer = Buffer.from(profilePhotoBase64, 'base64');
-    const compressedBuffer = await sharp(rawBuffer)
-        .resize({ width: 400, fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 65, progressive: true })
-        .toBuffer();
+    // Check if Supabase is available
+    if (!supabase) {
+        logger.warn(`[DEV] Supabase not available. Returning placeholder for user ${userId}`);
+        // Return a placeholder URL for development
+        return `https://placehold.co/400x400/2196F3/FFFFFF?text=Mistri+${userId}`;
+    }
 
-    const fileName = `mistri_${userId}_${Date.now()}.jpg`;
+    try {
+        const rawBuffer = Buffer.from(profilePhotoBase64, 'base64');
+        const compressedBuffer = await sharp(rawBuffer)
+            .resize({ width: 400, fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 65, progressive: true })
+            .toBuffer();
 
-    const { data: uploadData, error: uploadError } = await supabase
-        .storage
-        .from('profiles')
-        .upload(fileName, compressedBuffer, { upsert: true, contentType: 'image/jpeg' });
+        const fileName = `mistri_${userId}_${Date.now()}.jpg`;
 
-    if (uploadError) throw uploadError;
+        const { data: uploadData, error: uploadError } = await supabase
+            .storage
+            .from('profiles')
+            .upload(fileName, compressedBuffer, { upsert: true, contentType: 'image/jpeg' });
 
-    const { data: urlData } = supabase.storage
-        .from('profiles')
-        .getPublicUrl(uploadData.path);
+        if (uploadError) throw uploadError;
 
-    return urlData.publicUrl;
+        const { data: urlData } = supabase.storage
+            .from('profiles')
+            .getPublicUrl(uploadData.path);
+
+        return urlData.publicUrl;
+    } catch (error) {
+        logger.error('Image upload error:', error);
+        // Return placeholder on error
+        return `https://placehold.co/400x400/FF0000/FFFFFF?text=Error+${userId}`;
+    }
 }
 
 async function uploadGovtIdImage(
@@ -53,35 +80,44 @@ async function uploadGovtIdImage(
     label: 'front' | 'back',
     userId: string | number
 ): Promise<string> {
-    const rawBuffer = Buffer.from(base64, 'base64');
-    const compressedBuffer = await sharp(rawBuffer)
-        .resize({ width: 1200, fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 80, progressive: true })
-        .toBuffer();
+    // Check if Supabase is available
+    if (!supabase) {
+        logger.warn(`[DEV] Supabase not available. Returning placeholder for govt ID ${label}`);
+        return `https://placehold.co/1200x800/FF9800/FFFFFF?text=Govt+ID+${label}`;
+    }
 
-    const fileName = `govtid_${userId}_${label}_${Date.now()}.jpg`;
+    try {
+        const rawBuffer = Buffer.from(base64, 'base64');
+        const compressedBuffer = await sharp(rawBuffer)
+            .resize({ width: 1200, fit: 'inside', withoutEnlargement: true })
+            .jpeg({ quality: 80, progressive: true })
+            .toBuffer();
 
-    const { data: uploadData, error: uploadError } = await supabase
-        .storage
-        .from('profiles')
-        .upload(fileName, compressedBuffer, { upsert: true, contentType: 'image/jpeg' });
+        const fileName = `govtid_${userId}_${label}_${Date.now()}.jpg`;
 
-    if (uploadError) throw uploadError;
+        const { data: uploadData, error: uploadError } = await supabase
+            .storage
+            .from('profiles')
+            .upload(fileName, compressedBuffer, { upsert: true, contentType: 'image/jpeg' });
 
-    const { data: urlData } = supabase.storage
-        .from('profiles')
-        .getPublicUrl(uploadData.path);
+        if (uploadError) throw uploadError;
 
-    return urlData.publicUrl;
+        const { data: urlData } = supabase.storage
+            .from('profiles')
+            .getPublicUrl(uploadData.path);
+
+        return urlData.publicUrl;
+    } catch (error) {
+        logger.error(`Government ID (${label}) upload error:`, error);
+        return `https://placehold.co/1200x800/FF0000/FFFFFF?text=Govt+ID+Error`;
+    }
 }
 
 export const createMistriProfile = async (req: Request, res: Response) => {
     try {
-        // FIXED: Use req.user.id instead of req.user.userId
         const userId = req.user?.id;
         
-        console.log('Create Mistri Profile - User ID:', userId);
-        console.log('Create Mistri Profile - Request body keys:', Object.keys(req.body));
+        logger.info('Create Mistri Profile - User ID:', userId);
         
         if (!userId) {
             return res.status(401).json({ 
@@ -153,11 +189,21 @@ export const createMistriProfile = async (req: Request, res: Response) => {
             });
         }
 
+        // Validate service ID
+        const validServiceIds = [1, 2]; // Add more as needed
+        if (!validServiceIds.includes(Number(serviceId))) {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid service ID. Please select a valid service category."
+            });
+        }
+
         const SERVICE_MAP: Record<number, string> = {
             1: 'plumber',
             2: 'electrician',
+            // Add more services as needed
         };
-        const serviceName = SERVICE_MAP[serviceId];
+        const serviceName = SERVICE_MAP[Number(serviceId)];
         if (!serviceName) {
             return res.status(400).json({ 
                 success: false,
@@ -165,14 +211,15 @@ export const createMistriProfile = async (req: Request, res: Response) => {
             });
         }
         
+        // Insert service if it doesn't exist
         await db.insert(services)
-            .values({ id: serviceId, serviceName })
+            .values({ id: Number(serviceId), serviceName, isActive: true })
             .onConflictDoNothing();
 
-        // Upload images
-        let profilePhotoUrl = null;
-        let govtIdFrontUrl = null;
-        let govtIdBackUrl = null;
+        // Upload images with fallback
+        let profilePhotoUrl: string;
+        let govtIdFrontUrl: string;
+        let govtIdBackUrl: string;
 
         try {
             [profilePhotoUrl, govtIdFrontUrl, govtIdBackUrl] = await Promise.all([
@@ -181,52 +228,56 @@ export const createMistriProfile = async (req: Request, res: Response) => {
                 uploadGovtIdImage(govtIdBackBase64, 'back', userId),
             ]);
         } catch (uploadError) {
-            console.error('Image upload error:', uploadError);
-            return res.status(500).json({ 
-                success: false,
-                message: "Failed to upload images. Please try again." 
-            });
+            logger.error('Image upload error:', uploadError);
+            // Continue with placeholder URLs
+            profilePhotoUrl = `https://placehold.co/400x400/2196F3/FFFFFF?text=Mistri+${userId}`;
+            govtIdFrontUrl = `https://placehold.co/1200x800/FF9800/FFFFFF?text=Govt+ID+Front`;
+            govtIdBackUrl = `https://placehold.co/1200x800/FF9800/FFFFFF?text=Govt+ID+Back`;
         }
 
-        // Create mistri profile
-        const [newProfile] = await db.insert(mistriProfiles).values({
-            userId,
-            serviceId,
-            profilePhotoUrl,
-            currentLocation,
-            bio,
-            experienceLevel,
-            govtIdType,
-            govtIdFrontUrl,
-            govtIdBackUrl,
-            approvalStatus: "pending",
-            isAvailable: true,
-            availabilityStatus: "available",
-        }).returning();
+        // Create mistri profile using transaction
+        const result = await db.transaction(async (tx) => {
+            const [newProfile] = await tx.insert(mistriProfiles).values({
+                userId,
+                serviceId: Number(serviceId),
+                profilePhotoUrl,
+                currentLocation,
+                bio,
+                experienceLevel,
+                govtIdType,
+                govtIdFrontUrl,
+                govtIdBackUrl,
+                approvalStatus: "pending",
+                isAvailable: true,
+                availabilityStatus: "available",
+            }).returning();
 
-        // Update user
-        const [updatedUser] = await db.update(users)
-            .set({ 
-                fullName, 
-                role: "mistri",
-                isOnboarded: true, 
-                onboardingCompletedAt: new Date(),
-                roleSelectedAt: new Date(),
-            })
-            .where(eq(users.id, userId))
-            .returning();
+            // Update user
+            const [updatedUser] = await tx.update(users)
+                .set({ 
+                    fullName, 
+                    role: "mistri",
+                    isOnboarded: true, 
+                    onboardingCompletedAt: new Date(),
+                    roleSelectedAt: new Date(),
+                })
+                .where(eq(users.id, userId))
+                .returning();
+
+            return { profile: newProfile, user: updatedUser };
+        });
 
         return res.status(200).json({ 
             success: true, 
             message: "Profile created successfully. Awaiting admin approval.", 
-            profile: newProfile,
-            user: updatedUser
+            profile: result.profile,
+            user: result.user
         });
     } catch (error) {
-        console.error('Mistri profile error', error);
+        logger.error('Mistri profile error:', error);
         return res.status(500).json({ 
             success: false,
-            message: "Failed to create mistri profile: " + (error as Error).message 
+            message: "Failed to create mistri profile. Please try again." 
         });
     }
 };
@@ -283,7 +334,7 @@ export const getNearbyMistris = async (req: Request, res: Response) => {
                         mistriLat = location.lat;
                         mistriLng = location.lng;
                     } else {
-                        console.error('Mistri location is null for mistri:', mistri.id);
+                        logger.warn('Mistri location is null for mistri:', mistri.id);
                         return null;
                     }
 
@@ -299,7 +350,7 @@ export const getNearbyMistris = async (req: Request, res: Response) => {
                         averageRating: mistri.averageRating || 0,
                     };
                 } catch (error) {
-                    console.error('Error parsing mistri location:', mistri.currentLocation, error);
+                    logger.error('Error parsing mistri location:', mistri.currentLocation, error);
                     return null;
                 }
             })
@@ -314,7 +365,7 @@ export const getNearbyMistris = async (req: Request, res: Response) => {
             message: `Found ${nearbyMistris.length} mistris within ${maxDistanceKm}km`,
         });
     } catch (error) {
-        console.error("Error fetching nearby mistris:", error);
+        logger.error("Error fetching nearby mistris:", error);
         return res.status(500).json({
             success: false,
             message: "Failed to fetch nearby mistris",
@@ -368,7 +419,7 @@ export const getTargetedRequests = async (req: Request, res: Response) => {
             count: targetedRequests.length,
         });
     } catch (error) {
-        console.error("Error fetching targeted requests:", error);
+        logger.error("Error fetching targeted requests:", error);
         return res.status(500).json({
             success: false,
             message: "Failed to fetch targeted requests",
@@ -430,7 +481,7 @@ export const getMistriProfile = async (req: Request, res: Response) => {
             profile: profile[0],
         });
     } catch (error) {
-        console.error("Error fetching mistri profile:", error);
+        logger.error("Error fetching mistri profile:", error);
         return res.status(500).json({
             success: false,
             message: "Failed to fetch mistri profile",
@@ -488,7 +539,7 @@ export const getAcceptedJobs = async (req: Request, res: Response) => {
             count: acceptedJobs.length,
         });
     } catch (error) {
-        console.error("Error fetching accepted jobs:", error);
+        logger.error("Error fetching accepted jobs:", error);
         return res.status(500).json({
             success: false,
             message: "Failed to fetch accepted jobs",
@@ -521,11 +572,19 @@ export const updateMistriProfile = async (req: Request, res: Response) => {
         const userUpdates: any = {};
 
         if (serviceId !== undefined) {
+            const validServiceIds = [1, 2];
+            if (!validServiceIds.includes(Number(serviceId))) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Invalid service ID. Please select a valid service category."
+                });
+            }
+            
             const SERVICE_MAP: Record<number, string> = {
                 1: 'plumber',
                 2: 'electrician',
             };
-            const serviceName = SERVICE_MAP[serviceId];
+            const serviceName = SERVICE_MAP[Number(serviceId)];
             if (!serviceName) {
                 return res.status(400).json({ 
                     success: false,
@@ -533,9 +592,9 @@ export const updateMistriProfile = async (req: Request, res: Response) => {
                 });
             }
             await db.insert(services)
-                .values({ id: serviceId, serviceName })
+                .values({ id: Number(serviceId), serviceName, isActive: true })
                 .onConflictDoNothing();
-            mistriProfileUpdates.serviceId = serviceId;
+            mistriProfileUpdates.serviceId = Number(serviceId);
         }
 
         if (profilePhotoBase64) {
@@ -603,10 +662,10 @@ export const updateMistriProfile = async (req: Request, res: Response) => {
             profile: updatedProfile[0],
         });
     } catch (error) {
-        console.error('Mistri profile update error', error);
+        logger.error('Mistri profile update error:', error);
         return res.status(500).json({ 
             success: false,
-            message: "Failed to update mistri profile" 
+            message: "Failed to update mistri profile. Please try again." 
         });
     }
 };

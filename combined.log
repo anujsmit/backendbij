@@ -1,0 +1,45 @@
+{"level":"warn","message":"REDIS_URL not set, Redis disabled","service":"servex-api","timestamp":"2026-06-19T15:29:33.130Z"}
+{"level":"warn","message":"Supabase environment variables not properly set. Image upload features will use fallback mode.","service":"servex-api","timestamp":"2026-06-19T15:29:34.735Z"}
+{"level":"warn","message":"Supabase environment variables not properly set. Banner image upload features will use fallback mode.","service":"servex-api","timestamp":"2026-06-19T15:29:35.957Z"}
+{"level":"warn","message":"Supabase environment variables not set. Upload features disabled.","service":"servex-api","timestamp":"2026-06-19T15:29:35.970Z"}
+{"level":"info","message":"Server started on port 3000 in undefined mode","service":"servex-api","timestamp":"2026-06-19T15:29:36.337Z"}
+{"level":"info","message":"Redis: Disabled","service":"servex-api","timestamp":"2026-06-19T15:29:36.338Z"}
+{"level":"info","message":"Queue: Memory (SimpleQueue)","service":"servex-api","timestamp":"2026-06-19T15:29:36.338Z"}
+{"level":"warn","message":"Cache service running in fallback mode (no Redis)","service":"servex-api","timestamp":"2026-06-19T15:29:36.339Z"}
+{"level":"warn","message":"Redis unavailable, falling back to SimpleQueue","service":"servex-api","timestamp":"2026-06-19T15:29:36.339Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:31:03.736Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:31:33.727Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:32:03.723Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:32:33.729Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:33:03.739Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:33:33.744Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:34:03.760Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:34:33.774Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:35:03.787Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:35:33.797Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:36:03.808Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:36:33.819Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:37:03.825Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:37:33.829Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:38:03.831Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:38:33.834Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:39:03.838Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:39:33.841Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:40:03.853Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:40:33.858Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:41:03.865Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:41:33.874Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:42:03.883Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:42:33.894Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:43:03.895Z"}
+{"level":"error","message":"Redis health check failed, switching to fallback mode","service":"servex-api","timestamp":"2026-06-19T15:43:33.903Z"}
+{"level":"info","message":"Received shutdown signal, closing gracefully...","service":"servex-api","timestamp":"2026-06-19T15:43:59.989Z"}
+{"level":"warn","message":"REDIS_URL not set, Redis disabled","service":"servex-api","timestamp":"2026-06-19T15:44:05.271Z"}
+{"level":"warn","message":"Supabase environment variables not properly set. Image upload features will use fallback mode.","service":"servex-api","timestamp":"2026-06-19T15:44:06.550Z"}
+{"level":"warn","message":"Supabase environment variables not properly set. Banner image upload features will use fallback mode.","service":"servex-api","timestamp":"2026-06-19T15:44:07.728Z"}
+{"level":"warn","message":"Supabase environment variables not set. Upload features disabled.","service":"servex-api","timestamp":"2026-06-19T15:44:07.740Z"}
+{"level":"info","message":"Server started on port 3000 in undefined mode","service":"servex-api","timestamp":"2026-06-19T15:44:08.110Z"}
+{"level":"info","message":"Redis: Disabled","service":"servex-api","timestamp":"2026-06-19T15:44:08.110Z"}
+{"level":"info","message":"Queue: Memory (SimpleQueue)","service":"servex-api","timestamp":"2026-06-19T15:44:08.110Z"}
+{"level":"warn","message":"Cache service running in fallback mode (no Redis)","service":"servex-api","timestamp":"2026-06-19T15:44:08.111Z"}
+{"level":"warn","message":"Redis unavailable, falling back to SimpleQueue","service":"servex-api","timestamp":"2026-06-19T15:44:08.111Z"}

@@ -169,7 +169,9 @@ export const deleteServiceCategory = async (req: Request, res: Response) => {
 // PLATFORM SERVICES (Level 2 - Sub-Categories)
 // ============================================
 
-// ✅ FIXED: Proper Drizzle query with conditions array
+// backend/src/controllers/adminServiceController.ts
+
+// In getAllPlatformServices function - add isPopular and serviceItemsCount
 export const getAllPlatformServices = async (req: Request, res: Response) => {
   try {
     const serviceId = req.query.serviceId as string;
@@ -191,7 +193,7 @@ export const getAllPlatformServices = async (req: Request, res: Response) => {
         price: platformServices.price,
         imageUrl: platformServices.imageUrl,
         isActive: platformServices.isActive,
-        isPopular: platformServices.isPopular,
+        isPopular: platformServices.isPopular, // ✅ ADD THIS
         createdAt: platformServices.createdAt,
         updatedAt: platformServices.updatedAt,
         duration_minutes: platformServices.duration_minutes,
@@ -199,6 +201,7 @@ export const getAllPlatformServices = async (req: Request, res: Response) => {
         thumbnail_url: platformServices.thumbnail_url,
         is_featured: platformServices.is_featured,
         categoryName: services.serviceName,
+        // ✅ ADD serviceItemsCount as a subquery
         serviceItemsCount: sql<number>`(
           SELECT COUNT(*) FROM service_items 
           WHERE service_items.platform_service_id = platform_services.id
@@ -216,6 +219,67 @@ export const getAllPlatformServices = async (req: Request, res: Response) => {
   }
 };
 
+// In getPlatformServicesByCategory function - add isPopular
+export const getPlatformServicesByCategory = async (req: Request, res: Response) => {
+  try {
+    const { categoryId } = req.params;
+
+    if (!categoryId) {
+      return res.status(400).json({
+        success: false,
+        message: "Category ID is required",
+      });
+    }
+
+    const categoryServices = await db
+      .select({
+        id: platformServices.id,
+        name: platformServices.name,
+        description: platformServices.description,
+        price: platformServices.price,
+        imageUrl: platformServices.imageUrl,
+        duration_minutes: platformServices.duration_minutes,
+        isActive: platformServices.isActive,
+        isPopular: platformServices.isPopular, // ✅ ADD THIS
+        serviceItemsCount: sql<number>`(
+          SELECT COUNT(*) FROM service_items 
+          WHERE service_items.platform_service_id = platform_services.id
+        )`,
+      })
+      .from(platformServices)
+      .where(
+        and(
+          eq(platformServices.serviceId, parseInt(categoryId)),
+          eq(platformServices.isActive, true)
+        )
+      )
+      .orderBy(asc(platformServices.name));
+
+    const [categoryInfo] = await db
+      .select({
+        id: services.id,
+        name: services.serviceName,
+        description: services.description,
+        iconUrl: services.customIconUrl,
+        iconColor: services.iconColor,
+      })
+      .from(services)
+      .where(eq(services.id, parseInt(categoryId)))
+      .limit(1);
+
+    return res.json({
+      success: true,
+      category: categoryInfo,
+      services: categoryServices,
+    });
+  } catch (error) {
+    console.error("Error fetching platform services by category:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch platform services",
+    });
+  }
+};
 export const getPlatformServiceById = async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
@@ -256,67 +320,6 @@ export const getPlatformServiceById = async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Error fetching platform service:", error);
     return res.status(500).json({ success: false, message: "Failed to fetch service" });
-  }
-};
-
-export const getPlatformServicesByCategory = async (req: Request, res: Response) => {
-  try {
-    const { categoryId } = req.params;
-
-    if (!categoryId) {
-      return res.status(400).json({
-        success: false,
-        message: "Category ID is required",
-      });
-    }
-
-    const categoryServices = await db
-      .select({
-        id: platformServices.id,
-        name: platformServices.name,
-        description: platformServices.description,
-        price: platformServices.price,
-        imageUrl: platformServices.imageUrl,
-        duration_minutes: platformServices.duration_minutes,
-        isActive: platformServices.isActive,
-        isPopular: platformServices.isPopular,
-        serviceItemsCount: sql<number>`(
-          SELECT COUNT(*) FROM service_items 
-          WHERE service_items.platform_service_id = platform_services.id
-        )`,
-      })
-      .from(platformServices)
-      .where(
-        and(
-          eq(platformServices.serviceId, parseInt(categoryId)),
-          eq(platformServices.isActive, true)
-        )
-      )
-      .orderBy(asc(platformServices.name));
-
-    const [categoryInfo] = await db
-      .select({
-        id: services.id,
-        name: services.serviceName,
-        description: services.description,
-        iconUrl: services.customIconUrl,
-        iconColor: services.iconColor,
-      })
-      .from(services)
-      .where(eq(services.id, parseInt(categoryId)))
-      .limit(1);
-
-    return res.json({
-      success: true,
-      category: categoryInfo,
-      services: categoryServices,
-    });
-  } catch (error) {
-    console.error("Error fetching platform services by category:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch platform services",
-    });
   }
 };
 

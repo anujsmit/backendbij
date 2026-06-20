@@ -1,3 +1,4 @@
+// src/controllers/heroBannerController.ts
 import { Request, Response } from "express";
 import { db } from "../db";
 import { heroBanners } from "../db/schema";
@@ -6,28 +7,52 @@ import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
 import sharp from "sharp";
 import { createAuditLog } from "../services/auditLog";
+import { logger } from "../utils/logger";
 
-const supabase = createClient(
-    process.env.SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_KEY!
-);
+// Initialize Supabase client conditionally
+let supabase: ReturnType<typeof createClient> | null = null;
+
+try {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+    
+    if (supabaseUrl && supabaseKey && supabaseUrl !== 'your-supabase-url' && supabaseKey !== 'your-supabase-key') {
+        supabase = createClient(supabaseUrl, supabaseKey);
+        logger.info('Supabase client initialized for banners');
+    } else {
+        logger.warn('Supabase environment variables not properly set. Banner image upload features will use fallback mode.');
+    }
+} catch (error) {
+    logger.error('Failed to initialize Supabase client for banners:', error);
+}
 
 async function uploadBannerImage(base64Image: string, bannerId: string): Promise<string> {
-    const rawBuffer = Buffer.from(base64Image, "base64");
-    const compressed = await sharp(rawBuffer)
-        .resize({ width: 1200, fit: "inside", withoutEnlargement: true })
-        .jpeg({ quality: 80, progressive: true })
-        .toBuffer();
+    // Check if Supabase is available
+    if (!supabase) {
+        logger.warn(`[DEV] Supabase not available. Returning placeholder for banner ${bannerId}`);
+        return `https://placehold.co/1200x400/1976D2/FFFFFF?text=Banner+${bannerId}`;
+    }
 
-    const fileName = `banner_${bannerId}_${Date.now()}.jpg`;
-    const { error } = await supabase.storage
-        .from("banners")
-        .upload(fileName, compressed, { upsert: true, contentType: "image/jpeg" });
+    try {
+        const rawBuffer = Buffer.from(base64Image, "base64");
+        const compressed = await sharp(rawBuffer)
+            .resize({ width: 1200, fit: "inside", withoutEnlargement: true })
+            .jpeg({ quality: 80, progressive: true })
+            .toBuffer();
 
-    if (error) throw error;
+        const fileName = `banner_${bannerId}_${Date.now()}.jpg`;
+        const { error } = await supabase.storage
+            .from("banners")
+            .upload(fileName, compressed, { upsert: true, contentType: "image/jpeg" });
 
-    const { data } = supabase.storage.from("banners").getPublicUrl(fileName);
-    return data.publicUrl;
+        if (error) throw error;
+
+        const { data } = supabase.storage.from("banners").getPublicUrl(fileName);
+        return data.publicUrl;
+    } catch (error) {
+        logger.error('Banner image upload error:', error);
+        return `https://placehold.co/1200x400/FF0000/FFFFFF?text=Banner+Error`;
+    }
 }
 
 // Get public banners for mobile app - can filter by ad type
@@ -286,7 +311,8 @@ export const updateHeroBanner = async (req: Request, res: Response) => {
         return res.status(500).json({ success: false, message: "Failed to update banner" });
     }
 };
-// Bulk delete banners (add after deleteHeroBanner)
+
+// Bulk delete banners
 export const bulkDeleteHeroBanners = async (req: Request, res: Response) => {
     try {
         const { ids } = req.body;
@@ -303,7 +329,7 @@ export const bulkDeleteHeroBanners = async (req: Request, res: Response) => {
         for (const id of ids) {
             const [existing] = await db.select().from(heroBanners).where(eq(heroBanners.id, id)).limit(1);
             if (existing) {
-                if (existing.imageUrl?.includes("supabase")) {
+                if (existing.imageUrl?.includes("supabase") && supabase) {
                     try {
                         const url = new URL(existing.imageUrl);
                         const match = url.pathname.match(/\/storage\/v1\/object\/public\/([^/]+)\/(.+)/);
@@ -339,7 +365,8 @@ export const bulkDeleteHeroBanners = async (req: Request, res: Response) => {
         return res.status(500).json({ success: false, message: "Failed to delete banners" });
     }
 };
-//Duplicate banner (add after toggleBannerActive)
+
+// Duplicate banner
 export const duplicateHeroBanner = async (req: Request, res: Response) => {
     try {
         const id = req.params.id as string;
@@ -380,6 +407,7 @@ export const duplicateHeroBanner = async (req: Request, res: Response) => {
         return res.status(500).json({ success: false, message: "Failed to duplicate banner" });
     }
 };
+
 export const deleteHeroBanner = async (req: Request, res: Response) => {
     try {
         const id = req.params.id as string;
@@ -388,7 +416,7 @@ export const deleteHeroBanner = async (req: Request, res: Response) => {
         const [existing] = await db.select().from(heroBanners).where(eq(heroBanners.id, id)).limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "Banner not found" });
 
-        if (existing.imageUrl?.includes("supabase")) {
+        if (existing.imageUrl?.includes("supabase") && supabase) {
             try {
                 const url = new URL(existing.imageUrl);
                 const match = url.pathname.match(/\/storage\/v1\/object\/public\/([^/]+)\/(.+)/);
