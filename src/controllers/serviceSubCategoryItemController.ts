@@ -22,6 +22,36 @@ const serviceItemSchema = z.object({
 export const getAllServiceItems = async (req: Request, res: Response) => {
   try {
     const subCategoryId = req.query.subCategoryId as string;
+    
+    console.log(`[serviceSubCategoryItemController] Fetching items for subCategoryId: ${subCategoryId}`);
+
+    // If no subCategoryId provided, return all items (with limit)
+    if (!subCategoryId) {
+      console.log('[serviceSubCategoryItemController] No subCategoryId provided, returning all items');
+      const allItems = await db
+        .select({
+          id: serviceSubCategoryItems.id,
+          subCategoryId: serviceSubCategoryItems.subCategoryId,
+          name: serviceSubCategoryItems.name,
+          description: serviceSubCategoryItems.description,
+          price: serviceSubCategoryItems.price,
+          durationMinutes: serviceSubCategoryItems.durationMinutes,
+          isActive: serviceSubCategoryItems.isActive,
+          isPopular: serviceSubCategoryItems.isPopular,
+          imageUrl: serviceSubCategoryItems.imageUrl,
+          displayOrder: serviceSubCategoryItems.displayOrder,
+          createdAt: serviceSubCategoryItems.createdAt,
+          updatedAt: serviceSubCategoryItems.updatedAt,
+          subCategoryName: serviceSubCategories.name,
+          categoryId: serviceSubCategories.categoryId,
+        })
+        .from(serviceSubCategoryItems)
+        .leftJoin(serviceSubCategories, eq(serviceSubCategoryItems.subCategoryId, serviceSubCategories.id))
+        .orderBy(serviceSubCategoryItems.displayOrder, serviceSubCategoryItems.name)
+        .limit(100);
+
+      return res.json({ success: true, serviceItems: allItems });
+    }
 
     // Build conditions array
     const conditions = [];
@@ -53,16 +83,24 @@ export const getAllServiceItems = async (req: Request, res: Response) => {
       .where(whereClause)
       .orderBy(serviceSubCategoryItems.displayOrder, serviceSubCategoryItems.name);
 
+    console.log(`[serviceSubCategoryItemController] Found ${items.length} items`);
+
     return res.json({ success: true, serviceItems: items });
   } catch (error) {
-    console.error("Error fetching service items:", error);
-    return res.status(500).json({ success: false, message: "Failed to fetch service items" });
+    console.error("[serviceSubCategoryItemController] Error fetching service items:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch service items",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
 export const getServiceItemById = async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
+    console.log(`[serviceSubCategoryItemController] Fetching service item by ID: ${id}`);
+
     const [item] = await db
       .select()
       .from(serviceSubCategoryItems)
@@ -75,8 +113,12 @@ export const getServiceItemById = async (req: Request, res: Response) => {
 
     return res.json({ success: true, serviceItem: item });
   } catch (error) {
-    console.error("Error fetching service item:", error);
-    return res.status(500).json({ success: false, message: "Failed to fetch service item" });
+    console.error("[serviceSubCategoryItemController] Error fetching service item:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch service item",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
@@ -86,6 +128,8 @@ export const createServiceItem = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
     }
+
+    console.log(`[serviceSubCategoryItemController] Creating service item:`, parsed.data);
 
     const [subCategory] = await db
       .select()
@@ -120,14 +164,18 @@ export const createServiceItem = async (req: Request, res: Response) => {
 
     return res.status(201).json({ success: true, serviceItem: created });
   } catch (error: any) {
+    console.error("[serviceSubCategoryItemController] Error creating service item:", error);
     if (error?.code === "23505") {
       return res.status(409).json({ 
         success: false, 
         message: "Service item with this name already exists in this sub-category" 
       });
     }
-    console.error("Error creating service item:", error);
-    return res.status(500).json({ success: false, message: "Failed to create service item" });
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to create service item",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
@@ -138,6 +186,8 @@ export const updateServiceItem = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
     }
+
+    console.log(`[serviceSubCategoryItemController] Updating service item ${id}:`, parsed.data);
 
     const [existing] = await db.select().from(serviceSubCategoryItems).where(eq(serviceSubCategoryItems.id, id)).limit(1);
     if (!existing) {
@@ -173,14 +223,20 @@ export const updateServiceItem = async (req: Request, res: Response) => {
 
     return res.json({ success: true, serviceItem: updated });
   } catch (error) {
-    console.error("Error updating service item:", error);
-    return res.status(500).json({ success: false, message: "Failed to update service item" });
+    console.error("[serviceSubCategoryItemController] Error updating service item:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to update service item",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
 export const deleteServiceItem = async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
+    console.log(`[serviceSubCategoryItemController] Deleting service item ${id}`);
+
     const [existing] = await db.select().from(serviceSubCategoryItems).where(eq(serviceSubCategoryItems.id, id)).limit(1);
     if (!existing) {
       return res.status(404).json({ success: false, message: "Service item not found" });
@@ -199,8 +255,12 @@ export const deleteServiceItem = async (req: Request, res: Response) => {
 
     return res.json({ success: true, message: "Service item deleted successfully" });
   } catch (error) {
-    console.error("Error deleting service item:", error);
-    return res.status(500).json({ success: false, message: "Failed to delete service item" });
+    console.error("[serviceSubCategoryItemController] Error deleting service item:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to delete service item",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
@@ -231,8 +291,12 @@ export const toggleServiceItemPopular = async (req: Request, res: Response) => {
 
     return res.json({ success: true, serviceItem: updated });
   } catch (error) {
-    console.error("Error toggling popular status:", error);
-    return res.status(500).json({ success: false, message: "Failed to toggle popular status" });
+    console.error("[serviceSubCategoryItemController] Error toggling popular status:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to toggle popular status",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
@@ -263,7 +327,11 @@ export const toggleServiceItemActive = async (req: Request, res: Response) => {
 
     return res.json({ success: true, serviceItem: updated });
   } catch (error) {
-    console.error("Error toggling active status:", error);
-    return res.status(500).json({ success: false, message: "Failed to toggle active status" });
+    console.error("[serviceSubCategoryItemController] Error toggling active status:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to toggle active status",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };

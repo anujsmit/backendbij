@@ -24,7 +24,7 @@ import { logger, httpLogger } from "./utils/logger";
 import { checkDatabaseHealth, closeDatabaseConnections } from "./db";
 import { closeQueues, getQueueStats } from "./services/queueService";
 import { cacheService } from "./services/cacheService";
-
+import publicRoutes from "./routes/public";
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -143,7 +143,7 @@ app.use("/api/config", configRoutes);
 app.use("/api/notification-preferences", notificationPreferencesRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/hero-banners", heroBannerRoutes);
-
+app.use("/api/public", publicRoutes);
 // Health check endpoints
 app.get("/", (_req: express.Request, res: express.Response) => {
   res.json({ service: "ServeX API", status: "ok", timestamp: new Date().toISOString() });
@@ -211,9 +211,8 @@ const gracefulShutdown = async (signal: string) => {
 };
 
 // Start server
-server = app.listen(Number(port), process.env.NODE_ENV === 'production' ? "127.0.0.1" : "0.0.0.0", () => {
+server = app.listen(Number(port), process.env.NODE_ENV === 'production' ? "127.0.0.1" : "0.0.0.1", () => {
   logger.info(`Server is running on port ${port} in ${process.env.NODE_ENV || 'development'} mode`);
-  
   // Print network interfaces
   const nets = networkInterfaces();
   logger.debug("Available network interfaces:");

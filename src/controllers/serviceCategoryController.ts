@@ -3,7 +3,7 @@
 import { Request, Response } from "express";
 import { db } from "../db";
 import { serviceCategories, serviceSubCategories } from "../db/schema";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { createAuditLog } from "../services/auditLog";
 

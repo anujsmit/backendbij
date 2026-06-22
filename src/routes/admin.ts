@@ -10,7 +10,7 @@ import { requirePermission } from "../middleware/requirePermission";
 // ============================================
 import * as categoryController from "../controllers/serviceCategoryController";
 import * as subCategoryController from "../controllers/subCategoryController";
-import * as serviceSubCategoryItemController from "../controllers/serviceSubCategoryItemController";
+import * as serviceItemController from "../controllers/serviceItemController"; // Changed from serviceSubCategoryItemController
 
 // ============================================
 // OTHER CONTROLLER IMPORTS
@@ -180,6 +180,7 @@ router.patch("/mistris/:userId/toggle-featured", requirePermission("mistris.mana
 router.patch("/mistris/:userId/update-service", requirePermission("mistris.manage"), updateMistriService);
 router.patch("/mistris/:userId/approve", requirePermission("mistris.manage"), approveMistri);
 router.patch("/mistris/:userId/reject", requirePermission("mistris.manage"), rejectMistri);
+
 // ============================================
 // SERVICE HIERARCHY - LEVEL 1: CATEGORIES
 // ============================================
@@ -201,13 +202,14 @@ router.delete("/sub-categories/:id", requirePermission("services.manage"), subCa
 // ============================================
 // SERVICE HIERARCHY - LEVEL 3: SERVICE ITEMS
 // ============================================
-router.get("/sub-category-items", requirePermission("services.manage"), serviceSubCategoryItemController.getAllServiceItems);
-router.get("/sub-category-items/:id", requirePermission("services.manage"), serviceSubCategoryItemController.getServiceItemById);
-router.post("/sub-category-items", requirePermission("services.manage"), serviceSubCategoryItemController.createServiceItem);
-router.patch("/sub-category-items/:id", requirePermission("services.manage"), serviceSubCategoryItemController.updateServiceItem);
-router.delete("/sub-category-items/:id", requirePermission("services.manage"), serviceSubCategoryItemController.deleteServiceItem);
-router.patch("/sub-category-items/:id/toggle-popular", requirePermission("services.manage"), serviceSubCategoryItemController.toggleServiceItemPopular);
-router.patch("/sub-category-items/:id/toggle-active", requirePermission("services.manage"), serviceSubCategoryItemController.toggleServiceItemActive);
+router.get("/sub-category-items", requirePermission("services.manage"), serviceItemController.getAllServiceItems);
+router.get("/sub-category-items/:id", requirePermission("services.manage"), serviceItemController.getServiceItemById);
+router.post("/sub-category-items", requirePermission("services.manage"), serviceItemController.createServiceItem);
+router.patch("/sub-category-items/:id", requirePermission("services.manage"), serviceItemController.updateServiceItem);
+router.delete("/sub-category-items/:id", requirePermission("services.manage"), serviceItemController.deleteServiceItem);
+router.patch("/sub-category-items/:id/toggle-popular", requirePermission("services.manage"), serviceItemController.toggleServiceItemPopular);
+router.patch("/sub-category-items/:id/toggle-active", requirePermission("services.manage"), serviceItemController.toggleServiceItemActive);
+
 // ============================================
 // CDN ASSET UPLOAD
 // ============================================

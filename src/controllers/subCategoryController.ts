@@ -2,7 +2,7 @@
 
 import { Request, Response } from "express";
 import { db } from "../db";
-import { serviceCategories, serviceSubCategories, serviceSubCategoryItems } from "../db/schema";
+import { serviceCategories, serviceSubCategories, serviceItems } from "../db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { z } from "zod";
 import { createAuditLog } from "../services/auditLog";
@@ -20,8 +20,9 @@ const subCategorySchema = z.object({
 export const getAllSubCategories = async (req: Request, res: Response) => {
   try {
     const categoryId = req.query.categoryId ? parseInt(req.query.categoryId as string) : undefined;
+    
+    console.log(`[subCategoryController] Fetching sub-categories for categoryId: ${categoryId}`);
 
-    // Build conditions array
     const conditions = [];
     if (categoryId) {
       conditions.push(eq(serviceSubCategories.categoryId, categoryId));
@@ -48,29 +49,45 @@ export const getAllSubCategories = async (req: Request, res: Response) => {
       .where(whereClause)
       .orderBy(serviceSubCategories.displayOrder, serviceSubCategories.name);
 
+    console.log(`[subCategoryController] Found ${subCategories.length} sub-categories`);
+
     const withCounts = await Promise.all(
       subCategories.map(async (sub) => {
-        const result = await db
-          .select({ count: sql<number>`count(*)` })
-          .from(serviceSubCategoryItems)
-          .where(eq(serviceSubCategoryItems.subCategoryId, sub.id));
-        return {
-          ...sub,
-          serviceItemsCount: Number(result[0]?.count || 0),
-        };
+        try {
+          const result = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(serviceItems)
+            .where(eq(serviceItems.subCategoryId, sub.id));
+          return {
+            ...sub,
+            serviceItemsCount: Number(result[0]?.count || 0),
+          };
+        } catch (err) {
+          console.error(`[subCategoryController] Error counting items for sub ${sub.id}:`, err);
+          return {
+            ...sub,
+            serviceItemsCount: 0,
+          };
+        }
       })
     );
 
     return res.json({ success: true, subCategories: withCounts });
   } catch (error) {
-    console.error("Error fetching sub-categories:", error);
-    return res.status(500).json({ success: false, message: "Failed to fetch sub-categories" });
+    console.error("[subCategoryController] Error fetching sub-categories:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch sub-categories",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
 export const getSubCategoryById = async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
+    console.log(`[subCategoryController] Fetching sub-category by ID: ${id}`);
+
     const [subCategory] = await db
       .select()
       .from(serviceSubCategories)
@@ -83,8 +100,12 @@ export const getSubCategoryById = async (req: Request, res: Response) => {
 
     return res.json({ success: true, subCategory });
   } catch (error) {
-    console.error("Error fetching sub-category:", error);
-    return res.status(500).json({ success: false, message: "Failed to fetch sub-category" });
+    console.error("[subCategoryController] Error fetching sub-category:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch sub-category",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
@@ -94,6 +115,8 @@ export const createSubCategory = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
     }
+
+    console.log(`[subCategoryController] Creating sub-category:`, parsed.data);
 
     const [category] = await db
       .select()
@@ -126,14 +149,18 @@ export const createSubCategory = async (req: Request, res: Response) => {
 
     return res.status(201).json({ success: true, subCategory: created });
   } catch (error: any) {
+    console.error("[subCategoryController] Error creating sub-category:", error);
     if (error?.code === "23505") {
       return res.status(409).json({ 
         success: false, 
         message: "Sub-category with this name already exists in this category" 
       });
     }
-    console.error("Error creating sub-category:", error);
-    return res.status(500).json({ success: false, message: "Failed to create sub-category" });
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to create sub-category",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
@@ -144,6 +171,8 @@ export const updateSubCategory = async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
     }
+
+    console.log(`[subCategoryController] Updating sub-category ${id}:`, parsed.data);
 
     const [existing] = await db.select().from(serviceSubCategories).where(eq(serviceSubCategories.id, id)).limit(1);
     if (!existing) {
@@ -177,14 +206,20 @@ export const updateSubCategory = async (req: Request, res: Response) => {
 
     return res.json({ success: true, subCategory: updated });
   } catch (error) {
-    console.error("Error updating sub-category:", error);
-    return res.status(500).json({ success: false, message: "Failed to update sub-category" });
+    console.error("[subCategoryController] Error updating sub-category:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to update sub-category",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
 export const deleteSubCategory = async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
+    console.log(`[subCategoryController] Deleting sub-category ${id}`);
+
     const [existing] = await db.select().from(serviceSubCategories).where(eq(serviceSubCategories.id, id)).limit(1);
     if (!existing) {
       return res.status(404).json({ success: false, message: "Sub-category not found" });
@@ -192,8 +227,8 @@ export const deleteSubCategory = async (req: Request, res: Response) => {
 
     const result = await db
       .select({ count: sql<number>`count(*)` })
-      .from(serviceSubCategoryItems)
-      .where(eq(serviceSubCategoryItems.subCategoryId, id));
+      .from(serviceItems)
+      .where(eq(serviceItems.subCategoryId, id));
 
     if (Number(result[0]?.count || 0) > 0) {
       return res.status(400).json({
@@ -215,7 +250,11 @@ export const deleteSubCategory = async (req: Request, res: Response) => {
 
     return res.json({ success: true, message: "Sub-category deleted successfully" });
   } catch (error) {
-    console.error("Error deleting sub-category:", error);
-    return res.status(500).json({ success: false, message: "Failed to delete sub-category" });
+    console.error("[subCategoryController] Error deleting sub-category:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to delete sub-category",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };

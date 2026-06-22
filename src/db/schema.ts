@@ -89,7 +89,10 @@ export const serviceCategories = pgTable("service_categories", {
   displayOrder: integer("display_order").default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  isActiveIdx: index("idx_service_categories_is_active").on(table.isActive),
+  displayOrderIdx: index("idx_service_categories_display_order").on(table.displayOrder),
+}));
 
 // ============================================
 // LEVEL 2: SERVICE SUB-CATEGORIES
@@ -117,6 +120,9 @@ export const serviceSubCategories = pgTable("service_sub_categories", {
 // LEVEL 3: SERVICE ITEMS
 // ============================================
 
+// backend/src/db/schema.ts
+
+// Level 3: Service Items (under sub-categories)
 export const serviceSubCategoryItems = pgTable("service_sub_category_items", {
   id: uuid("id").defaultRandom().primaryKey(),
   subCategoryId: uuid("sub_category_id").notNull().references(() => serviceSubCategories.id, { onDelete: "cascade" }),
@@ -170,20 +176,25 @@ export const platformServices = pgTable("platform_services", {
   is_featured: boolean("is_featured").default(false),
 });
 
-// Legacy service items (linked to platformServices)
 export const serviceItems = pgTable("service_items", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  platformServiceId: uuid("platform_service_id").notNull().references(() => platformServices.id, { onDelete: "cascade" }),
+  id: uuid("id").defaultRandom().primaryKey(),
+  subCategoryId: uuid("sub_category_id").notNull().references(() => serviceSubCategories.id, { onDelete: "cascade" }),
   name: varchar("name", { length: 255 }).notNull(),
   description: text("description"),
-  price: decimal("price", { precision: 10, scale: 2 }).notNull(),
+  price: numeric("price", { precision: 10, scale: 2 }).notNull(),
   durationMinutes: integer("duration_minutes"),
   isActive: boolean("is_active").default(true).notNull(),
   isPopular: boolean("is_popular").default(false).notNull(),
   imageUrl: text("image_url"),
+  displayOrder: integer("display_order").default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  uniqueSubCategoryName: unique("service_items_sub_category_id_name_unique").on(table.subCategoryId, table.name),
+  subCategoryIdIdx: index("idx_service_items_sub_category_id").on(table.subCategoryId),
+  isActiveIdx: index("idx_service_items_is_active").on(table.isActive),
+  isPopularIdx: index("idx_service_items_is_popular").on(table.isPopular),
+}));
 
 export const mistriProfiles = pgTable("mistri_profiles", {
   userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
@@ -443,12 +454,12 @@ export const serviceSubCategoriesRelations = relations(serviceSubCategories, ({ 
     fields: [serviceSubCategories.categoryId],
     references: [serviceCategories.id],
   }),
-  items: many(serviceSubCategoryItems),
+  items: many(serviceItems),
 }));
 
-export const serviceSubCategoryItemsRelations = relations(serviceSubCategoryItems, ({ one }) => ({
+export const serviceItemsRelations = relations(serviceItems, ({ one }) => ({
   subCategory: one(serviceSubCategories, {
-    fields: [serviceSubCategoryItems.subCategoryId],
+    fields: [serviceItems.subCategoryId],
     references: [serviceSubCategories.id],
   }),
 }));

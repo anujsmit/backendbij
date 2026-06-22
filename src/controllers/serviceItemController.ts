@@ -1,8 +1,9 @@
 // backend/src/controllers/serviceItemController.ts
+
 import { Request, Response } from "express";
 import { db } from "../db";
 import { serviceItems, serviceSubCategories } from "../db/schema";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { z } from "zod";
 import { createAuditLog } from "../services/auditLog";
 
@@ -21,6 +22,8 @@ const serviceItemSchema = z.object({
 export const getAllServiceItems = async (req: Request, res: Response) => {
   try {
     const subCategoryId = req.query.subCategoryId as string;
+    
+    console.log(`[serviceItemController] Fetching items for subCategoryId: ${subCategoryId}`);
 
     const conditions = [];
     if (subCategoryId) {
@@ -51,16 +54,24 @@ export const getAllServiceItems = async (req: Request, res: Response) => {
       .where(whereClause)
       .orderBy(serviceItems.displayOrder, serviceItems.name);
 
+    console.log(`[serviceItemController] Found ${items.length} items`);
+
     return res.json({ success: true, serviceItems: items });
   } catch (error) {
-    console.error("Error fetching service items:", error);
-    return res.status(500).json({ success: false, message: "Failed to fetch service items" });
+    console.error("[serviceItemController] Error fetching service items:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch service items",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
 export const getServiceItemById = async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
+    console.log(`[serviceItemController] Fetching service item by ID: ${id}`);
+
     const [item] = await db
       .select()
       .from(serviceItems)
@@ -73,8 +84,12 @@ export const getServiceItemById = async (req: Request, res: Response) => {
 
     return res.json({ success: true, serviceItem: item });
   } catch (error) {
-    console.error("Error fetching service item:", error);
-    return res.status(500).json({ success: false, message: "Failed to fetch service item" });
+    console.error("[serviceItemController] Error fetching service item:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to fetch service item",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
@@ -85,7 +100,8 @@ export const createServiceItem = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
     }
 
-    // Verify sub-category exists
+    console.log(`[serviceItemController] Creating service item:`, parsed.data);
+
     const [subCategory] = await db
       .select()
       .from(serviceSubCategories)
@@ -96,10 +112,16 @@ export const createServiceItem = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: "Sub-category not found" });
     }
 
+    // ✅ Explicitly map all fields to avoid type issues
     const [created] = await db.insert(serviceItems).values({
-      ...parsed.data,
+      subCategoryId: parsed.data.subCategoryId,
+      name: parsed.data.name,
+      description: parsed.data.description || null,
+      price: String(parsed.data.price), // ✅ Convert price to string
+      durationMinutes: parsed.data.durationMinutes || null,
       isActive: parsed.data.isActive ?? true,
       isPopular: parsed.data.isPopular ?? false,
+      imageUrl: parsed.data.imageUrl || null,
       displayOrder: parsed.data.displayOrder ?? 0,
     }).returning();
 
@@ -113,9 +135,19 @@ export const createServiceItem = async (req: Request, res: Response) => {
     });
 
     return res.status(201).json({ success: true, serviceItem: created });
-  } catch (error) {
-    console.error("Error creating service item:", error);
-    return res.status(500).json({ success: false, message: "Failed to create service item" });
+  } catch (error: any) {
+    console.error("[serviceItemController] Error creating service item:", error);
+    if (error?.code === "23505") {
+      return res.status(409).json({ 
+        success: false, 
+        message: "Service item with this name already exists in this sub-category" 
+      });
+    }
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to create service item",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
@@ -127,14 +159,47 @@ export const updateServiceItem = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
     }
 
+    console.log(`[serviceItemController] Updating service item ${id}:`, parsed.data);
+
     const [existing] = await db.select().from(serviceItems).where(eq(serviceItems.id, id)).limit(1);
     if (!existing) {
       return res.status(404).json({ success: false, message: "Service item not found" });
     }
 
+    // ✅ Build update object explicitly to avoid type issues
+    const updateData: any = { updatedAt: new Date() };
+    
+    if (parsed.data.subCategoryId !== undefined) {
+      updateData.subCategoryId = parsed.data.subCategoryId;
+    }
+    if (parsed.data.name !== undefined) {
+      updateData.name = parsed.data.name;
+    }
+    if (parsed.data.description !== undefined) {
+      updateData.description = parsed.data.description;
+    }
+    if (parsed.data.price !== undefined) {
+      updateData.price = String(parsed.data.price); // ✅ Convert price to string
+    }
+    if (parsed.data.durationMinutes !== undefined) {
+      updateData.durationMinutes = parsed.data.durationMinutes;
+    }
+    if (parsed.data.isActive !== undefined) {
+      updateData.isActive = parsed.data.isActive;
+    }
+    if (parsed.data.isPopular !== undefined) {
+      updateData.isPopular = parsed.data.isPopular;
+    }
+    if (parsed.data.imageUrl !== undefined) {
+      updateData.imageUrl = parsed.data.imageUrl;
+    }
+    if (parsed.data.displayOrder !== undefined) {
+      updateData.displayOrder = parsed.data.displayOrder;
+    }
+
     const [updated] = await db
       .update(serviceItems)
-      .set({ ...parsed.data, updatedAt: new Date() })
+      .set(updateData)
       .where(eq(serviceItems.id, id))
       .returning();
 
@@ -150,14 +215,20 @@ export const updateServiceItem = async (req: Request, res: Response) => {
 
     return res.json({ success: true, serviceItem: updated });
   } catch (error) {
-    console.error("Error updating service item:", error);
-    return res.status(500).json({ success: false, message: "Failed to update service item" });
+    console.error("[serviceItemController] Error updating service item:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to update service item",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
 export const deleteServiceItem = async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
+    console.log(`[serviceItemController] Deleting service item ${id}`);
+
     const [existing] = await db.select().from(serviceItems).where(eq(serviceItems.id, id)).limit(1);
     if (!existing) {
       return res.status(404).json({ success: false, message: "Service item not found" });
@@ -176,8 +247,12 @@ export const deleteServiceItem = async (req: Request, res: Response) => {
 
     return res.json({ success: true, message: "Service item deleted successfully" });
   } catch (error) {
-    console.error("Error deleting service item:", error);
-    return res.status(500).json({ success: false, message: "Failed to delete service item" });
+    console.error("[serviceItemController] Error deleting service item:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to delete service item",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
@@ -208,8 +283,12 @@ export const toggleServiceItemPopular = async (req: Request, res: Response) => {
 
     return res.json({ success: true, serviceItem: updated });
   } catch (error) {
-    console.error("Error toggling popular status:", error);
-    return res.status(500).json({ success: false, message: "Failed to toggle popular status" });
+    console.error("[serviceItemController] Error toggling popular status:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to toggle popular status",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };
 
@@ -240,7 +319,11 @@ export const toggleServiceItemActive = async (req: Request, res: Response) => {
 
     return res.json({ success: true, serviceItem: updated });
   } catch (error) {
-    console.error("Error toggling active status:", error);
-    return res.status(500).json({ success: false, message: "Failed to toggle active status" });
+    console.error("[serviceItemController] Error toggling active status:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to toggle active status",
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 };

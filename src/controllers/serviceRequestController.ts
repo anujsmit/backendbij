@@ -8,7 +8,10 @@ import {
   mistriProfiles, 
   services, 
   platformServices, 
-  serviceRequestPlatformServices 
+  serviceRequestPlatformServices,
+  serviceCategories,
+  serviceSubCategories,
+  serviceItems
 } from "../db/schema";
 import { z } from "zod";
 import { createNotification } from "./notificationController";
@@ -30,9 +33,12 @@ function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
   return R * c;
 }
 
-// Simplified schema - only include fields that exist in your database
+// Updated schema to support both category and sub-category selection
 const createServiceRequestSchema = z.object({
   type: z.string(),
+  categoryId: z.number().int().positive().optional(),
+  subCategoryId: z.string().uuid().optional(),
+  serviceItemIds: z.array(z.string().uuid()).optional(),
   platformServiceIds: z.array(z.string().uuid()).optional(),
   coords: z.object({
     lat: z.number(),
@@ -59,7 +65,18 @@ export const createServiceRequest = async (req: Request, res: Response) => {
       });
     }
 
-    const { type, platformServiceIds, coords, address, source, customerNotes, selectedMistriId } = validatedData.data;
+    const { 
+      type, 
+      categoryId,
+      subCategoryId,
+      serviceItemIds,
+      platformServiceIds, 
+      coords, 
+      address, 
+      source, 
+      customerNotes, 
+      selectedMistriId 
+    } = validatedData.data;
     const userId = req.user?.id;
 
     if (!userId) {
@@ -73,25 +90,70 @@ export const createServiceRequest = async (req: Request, res: Response) => {
     console.log('📦 Service type:', type);
     console.log('📍 Address:', address);
 
-    // Validate service type exists
+    // Normalize the service type to lowercase for comparison
+    const normalizedType = type.toLowerCase().trim();
+    let foundService = false;
+    let serviceNameForRequest = type;
+
+    // Check if the service exists in the services table (legacy)
     const serviceExists = await db.select().from(services).where(
       and(
-        eq(services.serviceName, type),
+        eq(services.serviceName, normalizedType),
         eq(services.isActive, true)
       )
     );
 
-    if (serviceExists.length === 0) {
+    if (serviceExists.length > 0) {
+      foundService = true;
+      serviceNameForRequest = serviceExists[0].serviceName;
+      console.log('✅ Found in services table:', serviceNameForRequest);
+    }
+
+    // If not found in legacy services, check service_categories
+    if (!foundService) {
+      // Try exact match
+      const categoryMatch = await db.select().from(serviceCategories).where(
+        and(
+          eq(serviceCategories.name, type),
+          eq(serviceCategories.isActive, true)
+        )
+      );
+
+      if (categoryMatch.length > 0) {
+        foundService = true;
+        serviceNameForRequest = categoryMatch[0].name;
+        console.log('✅ Found in service_categories (exact match):', serviceNameForRequest);
+      } else {
+        // Try case-insensitive match
+        const categoryMatchInsensitive = await db
+          .select()
+          .from(serviceCategories)
+          .where(
+            and(
+              sql`LOWER(${serviceCategories.name}) = ${normalizedType}`,
+              eq(serviceCategories.isActive, true)
+            )
+          );
+
+        if (categoryMatchInsensitive.length > 0) {
+          foundService = true;
+          serviceNameForRequest = categoryMatchInsensitive[0].name;
+          console.log('✅ Found in service_categories (case-insensitive):', serviceNameForRequest);
+        }
+      }
+    }
+
+    if (!foundService) {
       return res.status(400).json({
         success: false,
-        message: `Invalid service type: ${type}`,
+        message: `Invalid service type: ${type}. Please select a valid service category.`,
       });
     }
 
     // Create request with pending status
     const insertData: any = {
       customerId: userId,
-      type: type,
+      type: serviceNameForRequest, // Use the found service name
       lat: coords.lat.toString(),
       lng: coords.lng.toString(),
       address: address,
@@ -108,7 +170,41 @@ export const createServiceRequest = async (req: Request, res: Response) => {
 
     console.log('✅ Request created with ID:', newRequest.id);
 
-    // Add platform services if selected
+    // Add service items if selected (new hierarchy)
+    if (serviceItemIds && serviceItemIds.length > 0) {
+      const validItems = await db
+        .select()
+        .from(serviceItems)
+        .where(
+          and(
+            inArray(serviceItems.id, serviceItemIds),
+            eq(serviceItems.isActive, true)
+          )
+        );
+
+      if (validItems.length > 0) {
+        // Store service item references in the request
+        const itemNames = validItems.map(item => item.name).join(', ');
+        const itemPrices = validItems.reduce((sum, item) => sum + parseFloat(item.price), 0);
+        
+        // Update the request with service item info
+        const existingNotes = newRequest.customerNotes || '';
+        const updatedNotes = existingNotes 
+          ? `${existingNotes}\n\nSelected Services: ${itemNames}\nTotal: NPR ${itemPrices.toFixed(2)}`
+          : `Selected Services: ${itemNames}\nTotal: NPR ${itemPrices.toFixed(2)}`;
+        
+        await db.update(serviceRequests)
+          .set({
+            customerNotes: updatedNotes,
+            paymentAmount: itemPrices.toString(),
+          })
+          .where(eq(serviceRequests.id, newRequest.id));
+        
+        console.log(`📎 Added ${validItems.length} service items`);
+      }
+    }
+
+    // Add platform services if selected (legacy)
     if (platformServiceIds && platformServiceIds.length > 0) {
       const validServices = await db
         .select()
@@ -139,13 +235,24 @@ export const createServiceRequest = async (req: Request, res: Response) => {
       await createNotification(
         admin.id,
         "New Service Request",
-        `Customer requested ${type} service at ${address.substring(0, 100)}`,
+        `Customer requested ${serviceNameForRequest} service at ${address.substring(0, 100)}`,
         "admin_new_request",
         newRequest.id
       );
     }
 
     console.log(`📧 Notified ${admins.length} admins`);
+
+    // If a specific mistri was selected, notify them
+    if (selectedMistriId) {
+      await createNotification(
+        selectedMistriId,
+        "New Service Request",
+        `You have been selected for a ${serviceNameForRequest} service request at ${address.substring(0, 100)}`,
+        "new_request",
+        newRequest.id
+      );
+    }
 
     return res.status(201).json({
       success: true,
