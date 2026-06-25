@@ -7,6 +7,8 @@ import { eq, and, gt, gte, sql } from "drizzle-orm";
 import jwt from "jsonwebtoken";
 import { randomBytes } from "crypto";
 import bcrypt from "bcrypt";
+import { logger } from "../utils/logger";
+import { createAuditLog } from "../services/auditLog";
 
 const ACCESS_TOKEN_EXPIRY = '1h';
 const REFRESH_TOKEN_EXPIRY = '30d';
@@ -94,57 +96,316 @@ export const sendOtp = async (req: Request, res: Response) => {
     }
 };
 
-export const verifyOtp = async (req: Request, res: Response) => {
-    const { phone, otp } = req.body;
-
-    console.log('Verify OTP request received:', { phone, otp, phoneType: typeof phone, otpType: typeof otp });
-
-    if (!phone || !otp) {
-        return res.status(400).json({ message: "Phone number and OTP are required" });
-    }
-
+// ✅ FIXED: Added null check for user.role
+export const cancelAccountDeletion = async (req: Request, res: Response) => {
     try {
-        await verifyOtpService(phone, otp);
+        const userId = req.user?.id;
 
-        const cleanPhone = phone.replace(/\s+/g, '');
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized"
+            });
+        }
 
-        let user = await db.query.users.findFirst({
-            where: eq(users.phoneNumber, cleanPhone),
+        // Get user to check if deletion is scheduled
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, userId)
         });
 
         if (!user) {
-            user = (await db.insert(users).values({ phoneNumber: cleanPhone, fullName: "" }).returning())[0];
+            return res.status(404).json({
+                success: false,
+                message: "User not found"
+            });
         }
 
-        const tokens = await generateTokens(user.id);
+        if (!user.deletionScheduledAt) {
+            return res.status(400).json({
+                success: false,
+                message: "No deletion scheduled"
+            });
+        }
 
-        let approvalStatus: string | null = null;
-        let approvalRejectionReason: string | null = null;
-        if (user.role === "mistri") {
-            const [profile] = await db
-                .select({
-                    approvalStatus: mistriProfiles.approvalStatus,
-                    approvalRejectionReason: mistriProfiles.approvalRejectionReason,
-                })
-                .from(mistriProfiles)
-                .where(eq(mistriProfiles.userId, user.id))
-                .limit(1);
-            if (profile) {
-                approvalStatus = profile.approvalStatus;
-                approvalRejectionReason = profile.approvalRejectionReason;
+        // Clear deletion_scheduled_at and reactivate account
+        const [updatedUser] = await db.update(users)
+            .set({
+                deletionScheduledAt: null,
+                isActive: true,
+                updatedAt: new Date(),
+            })
+            .where(eq(users.id, userId))
+            .returning();
+
+        // ✅ FIXED: Provide default role if user.role is null
+        const userRole = (user.role || 'user') as 'user' | 'mistri' | 'admin';
+
+        // Create audit log
+        await createAuditLog({
+            entityType: "user",
+            entityId: userId,
+            action: "account_deletion_cancelled",
+            performedBy: userId,
+            performedByRole: userRole,
+            oldValue: { deletionScheduledAt: user.deletionScheduledAt },
+            newValue: { deletionScheduledAt: null },
+        });
+
+        return res.json({
+            success: true,
+            message: "Account deletion cancelled successfully",
+            user: {
+                id: updatedUser.id,
+                phoneNumber: updatedUser.phoneNumber,
+                fullName: updatedUser.fullName,
+                role: updatedUser.role,
+                deletionScheduledAt: null,
             }
-        }
-
-        res.status(200).json({
-            accessToken: tokens.accessToken,
-            refreshToken: tokens.refreshToken,
-            expiresAt: tokens.expiresAt,
-            token: tokens.accessToken,
-            user: { ...user, approvalStatus, approvalRejectionReason },
         });
     } catch (error) {
-        console.error(error);
-        res.status(400).json({ message: "Invalid or expired OTP" });
+        console.error("Error cancelling account deletion:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to cancel account deletion"
+        });
+    }
+};
+
+// ✅ FIXED: Added scheduleAccountDeletion function
+export const scheduleAccountDeletion = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.id;
+        const { password } = req.body;
+
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized"
+            });
+        }
+
+        if (!password) {
+            return res.status(400).json({
+                success: false,
+                message: "Password is required"
+            });
+        }
+
+        // Get user with password hash
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, userId)
+        });
+
+        if (!user || !user.passwordHash) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found or password not set"
+            });
+        }
+
+        // Verify password
+        const isValid = await bcrypt.compare(password, user.passwordHash);
+        if (!isValid) {
+            return res.status(401).json({
+                success: false,
+                message: "Incorrect password",
+                attemptsRemaining: 9
+            });
+        }
+
+        // Check if user already has a scheduled deletion
+        if (user.deletionScheduledAt && new Date(user.deletionScheduledAt) > new Date()) {
+            return res.status(400).json({
+                success: false,
+                message: "Account deletion already scheduled"
+            });
+        }
+
+        // Schedule deletion (7 days from now)
+        const deletionDate = new Date();
+        deletionDate.setDate(deletionDate.getDate() + 7);
+
+        const [updatedUser] = await db.update(users)
+            .set({
+                deletionScheduledAt: deletionDate,
+                isActive: false,
+                updatedAt: new Date(),
+            })
+            .where(eq(users.id, userId))
+            .returning();
+
+        // ✅ FIXED: Provide default role if user.role is null
+        const userRole = (user.role || 'user') as 'user' | 'mistri' | 'admin';
+
+        await createAuditLog({
+            entityType: "user",
+            entityId: userId,
+            action: "account_deletion_scheduled",
+            performedBy: userId,
+            performedByRole: userRole,
+            oldValue: { deletionScheduledAt: null, isActive: true },
+            newValue: { 
+                deletionScheduledAt: deletionDate.toISOString(), 
+                isActive: false 
+            },
+            metadata: { scheduledDate: deletionDate.toISOString() }
+        });
+
+        return res.json({
+            success: true,
+            message: "Account deletion scheduled",
+            deletionScheduledAt: deletionDate.toISOString(),
+            user: {
+                id: updatedUser.id,
+                phoneNumber: updatedUser.phoneNumber,
+                fullName: updatedUser.fullName,
+                deletionScheduledAt: updatedUser.deletionScheduledAt,
+            }
+        });
+    } catch (error) {
+        logger.error("Error scheduling account deletion:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to schedule account deletion"
+        });
+    }
+};
+
+// ✅ FIXED: Added getDeletionStatus function
+export const getDeletionStatus = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?.id;
+
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Unauthorized"
+            });
+        }
+
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, userId)
+        });
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        const hasScheduledDeletion = user.deletionScheduledAt !== null && 
+            new Date(user.deletionScheduledAt) > new Date();
+
+        return res.json({
+            success: true,
+            deletionScheduledAt: hasScheduledDeletion ? user.deletionScheduledAt : null,
+            isActive: user.isActive,
+            hasScheduledDeletion,
+        });
+    } catch (error) {
+        console.error("Error getting deletion status:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to get deletion status"
+        });
+    }
+};
+
+export const verifyOtp = async (req: Request, res: Response) => {
+    try {
+        const { phone, otp } = req.body;
+
+        if (!phone || !otp) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone and OTP are required"
+            });
+        }
+
+        const cleanPhone = phone.replace(/\D/g, '');
+        
+        // Verify OTP
+        await verifyOtpService(cleanPhone, otp);
+
+        // Find or create user
+        let user = await db.query.users.findFirst({
+            where: eq(users.phoneNumber, cleanPhone)
+        });
+
+        if (!user) {
+            // Create new user
+            const [newUser] = await db.insert(users).values({
+                phoneNumber: cleanPhone,
+                fullName: 'User',
+                role: 'user',
+                isActive: true,
+                isVerified: true,
+            }).returning();
+            user = newUser;
+        } else {
+            // Update last login only - DO NOT touch deletion_scheduled_at
+            await db.update(users)
+                .set({ 
+                    lastLoginAt: new Date(),
+                })
+                .where(eq(users.id, user.id));
+        }
+
+        // Check if account has a scheduled deletion
+        const hasScheduledDeletion = user.deletionScheduledAt !== null && 
+            new Date(user.deletionScheduledAt) > new Date();
+
+        // Generate token
+        const accessToken = jwt.sign(
+            { userId: user.id, type: 'access' },
+            process.env.JWT_SECRET!,
+            { expiresIn: '7d' }
+        );
+
+        // If user has scheduled deletion, return special status
+        if (hasScheduledDeletion) {
+            return res.status(200).json({
+                success: true,
+                message: "Login successful",
+                accessToken,
+                user: {
+                    id: user.id,
+                    phoneNumber: user.phoneNumber,
+                    fullName: user.fullName,
+                    role: user.role,
+                    isVerified: user.isVerified,
+                    isOnboarded: user.isOnboarded,
+                    deletionScheduledAt: user.deletionScheduledAt,
+                    hasScheduledDeletion: true,
+                },
+                requiresDeletionAction: true,
+                deletionScheduledAt: user.deletionScheduledAt,
+            });
+        }
+
+        return res.json({
+            success: true,
+            message: "Login successful",
+            accessToken,
+            user: {
+                id: user.id,
+                phoneNumber: user.phoneNumber,
+                fullName: user.fullName,
+                role: user.role,
+                isVerified: user.isVerified,
+                isOnboarded: user.isOnboarded,
+                deletionScheduledAt: null,
+                hasScheduledDeletion: false,
+            },
+            requiresDeletionAction: false,
+        });
+    } catch (error) {
+        logger.error("OTP verification error:", error);
+        return res.status(400).json({
+            success: false,
+            message: error instanceof Error ? error.message : "Invalid or expired OTP"
+        });
     }
 };
 

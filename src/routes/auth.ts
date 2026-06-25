@@ -28,6 +28,7 @@ import {
     changePassword,
 } from "../controllers/passwordAuthController";
 import { createMistriProfile } from "../controllers/mistriController";
+import { cancelAccountDeletion, getDeletionStatus, scheduleAccountDeletion } from "../controllers/authController";
 
 const router = Router();
 
@@ -115,7 +116,9 @@ router.post("/verify-account-deletion", authenticateToken, verifyAccountDeletion
 
 // Create mistri profile (after authentication)
 router.post("/mistri/profile", authenticateToken, createMistriProfile);
-
+router.post("/delete-account", authenticateToken, scheduleAccountDeletion);
+router.post("/cancel-deletion", authenticateToken, cancelAccountDeletion);
+router.get("/deletion-status", authenticateToken, getDeletionStatus);
 
 router.post("/forgot-password", forgotPassword);
 

@@ -56,17 +56,27 @@ export const users = pgTable("users", {
   twoFaSecret: varchar("two_fa_secret", { length: 255 }),
   twoFaEnabled: boolean("two_fa_enabled").default(false),
   twoFaBackupCodes: text("two_fa_backup_codes").array(),
+  // ✅ Add deletion_scheduled_at column
+  deletionScheduledAt: timestamp("deletion_scheduled_at", { withTimezone: true }),
 });
 
+// ✅ Update loginAttempts to include userId
 export const loginAttempts = pgTable("login_attempts", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   phoneNumber: varchar("phone_number", { length: 20 }).notNull(),
+  // ✅ Add userId column
+  userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
   attemptType: varchar("attempt_type", { length: 20 }).notNull(),
   success: boolean("success").default(false),
   ipAddress: varchar("ip_address", { length: 45 }),
   userAgent: text("user_agent"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-});
+}, (table) => ({
+  // ✅ Add index for userId
+  userIdIdx: index("idx_login_attempts_user_id").on(table.userId),
+  phoneIdx: index("idx_login_attempts_phone").on(table.phoneNumber),
+  createdAtIdx: index("idx_login_attempts_created_at").on(table.createdAt),
+}));
 
 export const otps = pgTable("otps", {
   id: serial("id").primaryKey(),
@@ -120,9 +130,6 @@ export const serviceSubCategories = pgTable("service_sub_categories", {
 // LEVEL 3: SERVICE ITEMS
 // ============================================
 
-// backend/src/db/schema.ts
-
-// Level 3: Service Items (under sub-categories)
 export const serviceSubCategoryItems = pgTable("service_sub_category_items", {
   id: uuid("id").defaultRandom().primaryKey(),
   subCategoryId: uuid("sub_category_id").notNull().references(() => serviceSubCategories.id, { onDelete: "cascade" }),

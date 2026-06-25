@@ -117,7 +117,7 @@ export const createServiceItem = async (req: Request, res: Response) => {
       subCategoryId: parsed.data.subCategoryId,
       name: parsed.data.name,
       description: parsed.data.description || null,
-      price: String(parsed.data.price), // ✅ Convert price to string
+      price: String(parsed.data.price),
       durationMinutes: parsed.data.durationMinutes || null,
       isActive: parsed.data.isActive ?? true,
       isPopular: parsed.data.isPopular ?? false,

@@ -141,7 +141,7 @@ export const registerWithPassword = async (req: Request, res: Response) => {
     }
 };
 
-// Login with password
+
 export const loginWithPassword = async (req: Request, res: Response) => {
     try {
         const { phone, password } = req.body;
@@ -211,7 +211,11 @@ export const loginWithPassword = async (req: Request, res: Response) => {
             });
         }
 
-        // Record successful login
+        // ✅ Check if account has a scheduled deletion (and it's still in the future)
+        const hasScheduledDeletion = user.deletionScheduledAt !== null && 
+            new Date(user.deletionScheduledAt) > new Date();
+
+        // ✅ Record successful login (but DO NOT clear deletion_scheduled_at)
         await db.insert(loginAttempts).values({
             phoneNumber: cleanPhone,
             attemptType: 'password',
@@ -220,11 +224,42 @@ export const loginWithPassword = async (req: Request, res: Response) => {
             userAgent,
         });
 
-        // Update last login
+        // ✅ Update last login only - DO NOT touch deletion_scheduled_at
         await db.update(users)
-            .set({ lastLoginAt: new Date() })
+            .set({ 
+                lastLoginAt: new Date(),
+                // ✅ IMPORTANT: Do NOT set deletionScheduledAt to null here
+            })
             .where(eq(users.id, user.id));
 
+        // ✅ If user has scheduled deletion, return special status
+        if (hasScheduledDeletion) {
+            const accessToken = jwt.sign(
+                { userId: user.id, type: 'access' },
+                process.env.JWT_SECRET!,
+                { expiresIn: '7d' }
+            );
+
+            return res.status(200).json({
+                success: true,
+                message: "Login successful",
+                accessToken,
+                user: {
+                    id: user.id,
+                    phoneNumber: user.phoneNumber,
+                    fullName: user.fullName,
+                    role: user.role,
+                    isVerified: user.isVerified,
+                    isOnboarded: user.isOnboarded,
+                    deletionScheduledAt: user.deletionScheduledAt,
+                    hasScheduledDeletion: true,
+                },
+                requiresDeletionAction: true,
+                deletionScheduledAt: user.deletionScheduledAt,
+            });
+        }
+
+        // ✅ Normal login flow (no deletion scheduled)
         // Get mistri profile if exists
         let approvalStatus = null;
         let hasMistriProfile = false;
@@ -257,7 +292,10 @@ export const loginWithPassword = async (req: Request, res: Response) => {
                 approvalStatus,
                 hasMistriProfile,
                 dob: user.dob,
-            }
+                deletionScheduledAt: null,
+                hasScheduledDeletion: false,
+            },
+            requiresDeletionAction: false,
         });
     } catch (error) {
         logger.error("Login error:", error);

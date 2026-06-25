@@ -10,7 +10,7 @@ import { requirePermission } from "../middleware/requirePermission";
 // ============================================
 import * as categoryController from "../controllers/serviceCategoryController";
 import * as subCategoryController from "../controllers/subCategoryController";
-import * as serviceItemController from "../controllers/serviceItemController"; // Changed from serviceSubCategoryItemController
+import * as serviceItemController from "../controllers/serviceItemController";
 
 // ============================================
 // OTHER CONTROLLER IMPORTS
@@ -113,6 +113,8 @@ import {
     assignMistriToRequest,
     rejectPendingRequest,
     getAllRequests,
+    // ✅ Add this import
+    getPendingRequestDetails,
 } from "../controllers/adminAssignmentController";
 
 const router = express.Router();

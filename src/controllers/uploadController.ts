@@ -30,6 +30,8 @@ const uploadSchema = z.object({
         "service-icons", 
         "platform-services",
         "mistri-profiles", 
+        "service-items",
+        "sub-categories",
         "misc"
     ]).optional().default("misc"),
     fileName: z.string().optional(),

@@ -73,6 +73,7 @@ export const getRequestForAssignment = async (req: Request, res: Response) => {
         customerId: serviceRequests.customerId,
         customerName: users.fullName,
         customerPhone: users.phoneNumber,
+        paymentAmount: serviceRequests.paymentAmount,
       })
       .from(serviceRequests)
       .innerJoin(users, eq(serviceRequests.customerId, users.id))
@@ -86,7 +87,7 @@ export const getRequestForAssignment = async (req: Request, res: Response) => {
       });
     }
 
-    // Get platform services for this request
+    // ✅ Get platform services (legacy)
     const platformServicesList = await db
       .select({
         id: platformServices.id,
@@ -97,9 +98,49 @@ export const getRequestForAssignment = async (req: Request, res: Response) => {
       .innerJoin(platformServices, eq(serviceRequestPlatformServices.platformServiceId, platformServices.id))
       .where(eq(serviceRequestPlatformServices.serviceRequestId, requestId));
 
+    // ✅ Get service items (new hierarchy) - check if there's a junction table
+    // If you have a service_request_service_items table, query it here
+    // For now, we'll check if the payment amount is already calculated
+    
+    const requestData = request[0];
+    let finalAmount = requestData.paymentAmount;
+
+    // ✅ If no payment amount, calculate from platform services
+    if (!finalAmount && platformServicesList.length > 0) {
+      const total = platformServicesList.reduce((sum, svc) => sum + parseFloat(svc.price || '0'), 0);
+      finalAmount = total.toString();
+    }
+
+    // ✅ If still no amount, use default based on service type
+    if (!finalAmount) {
+      const defaultAmounts: Record<string, number> = {
+        'plumber': 1500,
+        'electrician': 2000,
+        'painter': 1800,
+        'carpenter': 2200,
+        'cleaning': 1200,
+        'ac_repair': 2500,
+      };
+      
+      const typeLower = requestData.type?.toLowerCase() || '';
+      let defaultAmount = 1500;
+      
+      for (const [key, amount] of Object.entries(defaultAmounts)) {
+        if (typeLower.includes(key)) {
+          defaultAmount = amount;
+          break;
+        }
+      }
+      
+      finalAmount = defaultAmount.toString();
+    }
+
     return res.json({
       success: true,
-      request: request[0],
+      request: {
+        ...requestData,
+        paymentAmount: finalAmount,
+      },
       platformServices: platformServicesList,
     });
   } catch (error) {
@@ -444,6 +485,62 @@ export const getAllRequests = async (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       message: "Failed to fetch requests",
+    });
+  }
+};
+
+// Add this new function after getRequestForAssignment
+export const getPendingRequestDetails = async (req: Request, res: Response) => {
+  try {
+    const requestId = req.params.id;
+
+    const request = await db
+      .select({
+        id: serviceRequests.id,
+        type: serviceRequests.type,
+        address: serviceRequests.address,
+        lat: serviceRequests.lat,
+        lng: serviceRequests.lng,
+        customerNotes: serviceRequests.customerNotes,
+        createdAt: serviceRequests.createdAt,
+        customerId: serviceRequests.customerId,
+        customerName: users.fullName,
+        customerPhone: users.phoneNumber,
+        paymentAmount: serviceRequests.paymentAmount,
+      })
+      .from(serviceRequests)
+      .innerJoin(users, eq(serviceRequests.customerId, users.id))
+      .where(eq(serviceRequests.id, requestId))
+      .limit(1);
+
+    if (request.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Request not found",
+      });
+    }
+
+    // Get platform services for this request
+    const platformServicesList = await db
+      .select({
+        id: platformServices.id,
+        name: platformServices.name,
+        price: platformServices.price,
+      })
+      .from(serviceRequestPlatformServices)
+      .innerJoin(platformServices, eq(serviceRequestPlatformServices.platformServiceId, platformServices.id))
+      .where(eq(serviceRequestPlatformServices.serviceRequestId, requestId));
+
+    return res.json({
+      success: true,
+      request: request[0],
+      platformServices: platformServicesList,
+    });
+  } catch (error) {
+    console.error("Error fetching pending request details:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch request details",
     });
   }
 };
