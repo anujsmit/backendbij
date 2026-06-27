@@ -25,9 +25,11 @@ import { checkDatabaseHealth, closeDatabaseConnections } from "./db";
 import { closeQueues, getQueueStats } from "./services/queueService";
 import { cacheService } from "./services/cacheService";
 import publicRoutes from "./routes/public";
+import orderRoutes from "./routes/orderRoutes";
 const app = express();
 const port = process.env.PORT || 3000;
 import publicServicesRoutes from "./routes/publicServices";
+import cartRoutes from "./routes/cartRoutes";
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : 0);
 
@@ -145,6 +147,8 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/hero-banners", heroBannerRoutes);
 app.use("/api/public", publicRoutes);
 app.use("/api/public", publicServicesRoutes);
+app.use("/api/orders", orderRoutes);
+app.use("/api/cart", cartRoutes);
 // Health check endpoints
 app.get("/", (_req: express.Request, res: express.Response) => {
   res.json({ service: "ServeX API", status: "ok", timestamp: new Date().toISOString() });

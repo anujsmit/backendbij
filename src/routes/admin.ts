@@ -113,9 +113,19 @@ import {
     assignMistriToRequest,
     rejectPendingRequest,
     getAllRequests,
-    // ✅ Add this import
     getPendingRequestDetails,
 } from "../controllers/adminAssignmentController";
+import {
+    getAllOrders,
+    getOrderById,
+    assignMistriToOrder,
+    getOrderCounts,
+    getSubOrdersByOrder,
+    assignMistriToSubOrder,
+    updateOrderStatus,
+    getOrderAssignmentStatus,
+    batchAssignSubOrders,
+} from "../controllers/adminOrderController";
 
 const router = express.Router();
 
@@ -308,5 +318,28 @@ router.post("/employees", requirePermission("employees.manage"), createEmployee)
 router.patch("/employees/:id", requirePermission("employees.manage"), updateEmployee);
 router.patch("/employees/:id/toggle-active", requirePermission("employees.manage"), toggleEmployeeActive);
 router.delete("/employees/:id", requirePermission("employees.manage"), removeEmployee);
+
+// ============================================
+// ORDER MANAGEMENT (Admin only)
+// ============================================
+const orderRouter = express.Router();
+
+// GET routes
+orderRouter.get("/", getAllOrders);
+orderRouter.get("/counts", getOrderCounts);
+orderRouter.get("/:id", getOrderById);
+orderRouter.get("/:id/sub-orders", getSubOrdersByOrder);
+orderRouter.get("/:id/assignment-status", getOrderAssignmentStatus);
+
+// PATCH routes - Order assignment
+orderRouter.patch("/:id/assign", assignMistriToOrder);
+orderRouter.patch("/sub-order/:id/assign", assignMistriToSubOrder);
+orderRouter.patch("/:id/status", updateOrderStatus);
+
+// POST routes - Batch assignment
+orderRouter.post("/:id/batch-assign", batchAssignSubOrders);
+
+// Mount the order router at /orders
+router.use("/orders", orderRouter);
 
 export default router;

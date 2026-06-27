@@ -470,3 +470,156 @@ export const serviceItemsRelations = relations(serviceItems, ({ one }) => ({
     references: [serviceSubCategories.id],
   }),
 }));
+
+
+
+export const orderStatusEnum = pgEnum("order_status", [
+    "pending",
+    "confirmed",
+    "assigned",
+    "in_progress",
+    "completed",
+    "cancelled",
+    "rejected"
+]);
+
+export const paymentStatusEnum = pgEnum("payment_status", [
+    "pending",
+    "paid",
+    "failed",
+    "refunded"
+]);
+
+export const orders = pgTable("orders", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    customerId: uuid("customer_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    assignedMistriId: uuid("assigned_mistri_id").references(() => users.id),
+    serviceRequestId: uuid("service_request_id").references(() => serviceRequests.id),
+    
+    status: orderStatusEnum("status").default("pending").notNull(),
+    paymentStatus: paymentStatusEnum("payment_status").default("pending"),
+    
+    subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull(),
+    tax: decimal("tax", { precision: 10, scale: 2 }).default("0"),
+    deliveryFee: decimal("delivery_fee", { precision: 10, scale: 2 }).default("0"),
+    discount: decimal("discount", { precision: 10, scale: 2 }).default("0"),
+    total: decimal("total", { precision: 10, scale: 2 }).notNull(),
+    
+    address: text("address").notNull(),
+    city: varchar("city", { length: 100 }),
+    zipCode: varchar("zip_code", { length: 20 }),
+    latitude: varchar("latitude", { length: 50 }),
+    longitude: varchar("longitude", { length: 50 }),
+    
+    customerNotes: text("customer_notes"),
+    adminNotes: text("admin_notes"),
+    
+    paymentMethod: varchar("payment_method", { length: 50 }).default("cash"),
+    paymentDetails: jsonb("payment_details"),
+    
+    scheduledDate: timestamp("scheduled_date"),
+    scheduledTime: varchar("scheduled_time", { length: 20 }),
+    
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+    confirmedAt: timestamp("confirmed_at"),
+    assignedAt: timestamp("assigned_at"),
+    completedAt: timestamp("completed_at"),
+    cancelledAt: timestamp("cancelled_at"),
+});
+
+// Add category_id to order_items
+export const orderItems = pgTable("order_items", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+    serviceItemId: uuid("service_item_id").notNull().references(() => serviceItems.id),
+    categoryId: integer("category_id").references(() => services.id), // ✅ Add this
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description"),
+    price: decimal("price", { precision: 10, scale: 2 }).notNull(),
+    quantity: integer("quantity").default(1).notNull(),
+    subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull(),
+    durationMinutes: integer("duration_minutes"),
+    imageUrl: text("image_url"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const orderTimeline = pgTable("order_timeline", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+    status: orderStatusEnum("status").notNull(),
+    note: text("note"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+
+
+
+// Add sub-orders table
+export const subOrders = pgTable("sub_orders", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+    categoryId: integer("category_id").notNull().references(() => services.id),
+    categoryName: varchar("category_name", { length: 100 }).notNull(),
+    assignedMistriId: uuid("assigned_mistri_id").references(() => users.id),
+    status: orderStatusEnum("status").default("pending").notNull(),
+    subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull(),
+    tax: decimal("tax", { precision: 10, scale: 2 }).default("0"),
+    total: decimal("total", { precision: 10, scale: 2 }).notNull(),
+    adminNotes: text("admin_notes"),
+    assignedAt: timestamp("assigned_at"),
+    completedAt: timestamp("completed_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+// Add sub-order items table
+export const subOrderItems = pgTable("sub_order_items", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    subOrderId: uuid("sub_order_id").notNull().references(() => subOrders.id, { onDelete: "cascade" }),
+    orderItemId: uuid("order_item_id").notNull().references(() => orderItems.id, { onDelete: "cascade" }),
+    serviceItemId: uuid("service_item_id").notNull().references(() => serviceItems.id),
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description"),
+    price: decimal("price", { precision: 10, scale: 2 }).notNull(),
+    quantity: integer("quantity").default(1).notNull(),
+    subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull(),
+    durationMinutes: integer("duration_minutes"),
+    imageUrl: text("image_url"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// Add sub-order timeline table
+export const subOrderTimeline = pgTable("sub_order_timeline", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    subOrderId: uuid("sub_order_id").notNull().references(() => subOrders.id, { onDelete: "cascade" }),
+    status: orderStatusEnum("status").notNull(),
+    note: text("note"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+
+
+export const carts = pgTable("carts", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+    userIdIdx: index("idx_carts_user_id").on(table.userId),
+}));
+
+export const cartItems = pgTable("cart_items", {
+    id: uuid("id").defaultRandom().primaryKey(),
+    cartId: uuid("cart_id").notNull().references(() => carts.id, { onDelete: "cascade" }),
+    serviceItemId: uuid("service_item_id").notNull().references(() => serviceItems.id, { onDelete: "cascade" }),
+    quantity: integer("quantity").default(1).notNull(),
+    addedAt: timestamp("added_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (table) => ({
+    cartIdServiceItemIdUnique: unique("cart_items_cart_id_service_item_id_unique").on(table.cartId, table.serviceItemId),
+    cartIdIdx: index("idx_cart_items_cart_id").on(table.cartId),
+    serviceItemIdIdx: index("idx_cart_items_service_item_id").on(table.serviceItemId),
+}));
