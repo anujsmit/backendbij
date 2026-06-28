@@ -1,3 +1,4 @@
+// backend/src/server.ts
 import express from "express";
 import "dotenv/config";
 import cors from "cors";
@@ -7,29 +8,49 @@ import rateLimit from "express-rate-limit";
 import timeout from "connect-timeout";
 // @ts-ignore - express-status-monitor has no types
 import statusMonitor from "express-status-monitor";
-import authRoutes from "./routes/auth";
-import serviceRequestRoutes from "./routes/serviceRequest";
-import mistriRoutes from "./routes/mistri";
-import notificationRoutes from "./routes/notifications";
-import servicesRoutes from "./routes/services";
-import platformServicesRoutes from "./routes/platformServices";
-import ratingsRoutes from "./routes/ratings";
-import configRoutes from "./routes/config";
-import notificationPreferencesRoutes from "./routes/notificationPreferences";
-import adminRoutes from "./routes/admin";
-import heroBannerRoutes from "./routes/heroBanners";
 import { networkInterfaces } from "os";
 import { resumeRecentDispatches } from "./services/dispatch";
 import { logger, httpLogger } from "./utils/logger";
 import { checkDatabaseHealth, closeDatabaseConnections } from "./db";
 import { closeQueues, getQueueStats } from "./services/queueService";
 import { cacheService } from "./services/cacheService";
+
+// ============================================
+// ROUTE IMPORTS
+// ============================================
+
+// Auth Routes
+import authRoutes from "./routes/auth";
+
+// Admin Routes
+import adminRoutes from "./routes/admin/admin";
+
+// Mistri Routes
+import mistriRoutes from "./routes/mistri";
+
+// User Routes
+import userRoutes from "./routes/user";
+
+// Public Routes
 import publicRoutes from "./routes/public";
+import publicServicesRoutes from "./routes/publicServices";
+
+// Feature Routes
+import serviceRequestRoutes from "./routes/serviceRequest";
+import notificationRoutes from "./routes/notifications";
+import notificationPreferencesRoutes from "./routes/notificationPreferences";
+import servicesRoutes from "./routes/services";
+import platformServicesRoutes from "./routes/platformServices";
+import ratingsRoutes from "./routes/ratings";
+import configRoutes from "./routes/config";
+import heroBannerRoutes from "./routes/heroBanners";
 import orderRoutes from "./routes/orderRoutes";
+import cartRoutes from "./routes/users/cartRoutes";
+import consultationRoutes from "./routes/users/consultationRoutes";
+
 const app = express();
 const port = process.env.PORT || 3000;
-import publicServicesRoutes from "./routes/publicServices";
-import cartRoutes from "./routes/cartRoutes";
+
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : 0);
 
@@ -87,7 +108,7 @@ app.use(cors({
     if (process.env.NODE_ENV !== 'production') {
       return callback(null, true);
     }
-    if (allowedOrigins.has(normalizeOrigin(origin))) {
+    if (allowedOrigins.has(origin)) {
       return callback(null, true);
     }
     callback(new Error('Not allowed by CORS'));
@@ -132,26 +153,58 @@ app.use('/api/', globalLimiter);
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
-// Routes
+// ============================================
+// ROUTES REGISTRATION
+// ============================================
+
+// ─── AUTH ROUTES ──────────────────────────
+// Mount auth routes at /api/auth
+// This handles: /api/auth/admin/*, /api/auth/mistri/*, /api/auth/user/*
 app.use("/api/auth", authLimiter, authRoutes);
-app.use("/api/admin/auth", adminAuthLimiter);
-app.use("/api/service-requests", serviceRequestRoutes);
+
+// ─── ADMIN ROUTES ────────────────────────
+// Mount admin routes at /api/admin
+// All admin routes are protected by authenticateAdmin + requireAdmin middleware
+app.use("/api/admin", adminRoutes);
+
+// ─── MISTRI ROUTES ──────────────────────
+// Mount mistri routes at /api/mistri
+// All mistri routes are protected by authenticateMistri middleware
 app.use("/api/mistri", mistriRoutes);
+
+// ─── USER ROUTES ────────────────────────
+// Mount user routes at /api/user
+// All user routes are protected by authenticateUser middleware
+app.use("/api/user", userRoutes);
+
+// ─── PUBLIC ROUTES ──────────────────────
+// Public routes - no authentication required
+app.use("/api/public", publicRoutes);
+app.use("/api/public", publicServicesRoutes);
+
+// ─── FEATURE ROUTES ──────────────────────
+app.use("/api/service-requests", serviceRequestRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/notification-preferences", notificationPreferencesRoutes);
 app.use("/api/services", servicesRoutes);
 app.use("/api/platform-services", platformServicesRoutes);
 app.use("/api/ratings", ratingsRoutes);
 app.use("/api/config", configRoutes);
-app.use("/api/notification-preferences", notificationPreferencesRoutes);
-app.use("/api/admin", adminRoutes);
 app.use("/api/hero-banners", heroBannerRoutes);
-app.use("/api/public", publicRoutes);
-app.use("/api/public", publicServicesRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/cart", cartRoutes);
-// Health check endpoints
+app.use("/api/consultations", consultationRoutes);
+
+// ============================================
+// HEALTH CHECK ENDPOINTS
+// ============================================
+
 app.get("/", (_req: express.Request, res: express.Response) => {
-  res.json({ service: "ServeX API", status: "ok", timestamp: new Date().toISOString() });
+  res.json({ 
+    service: "ServeX API", 
+    status: "ok", 
+    timestamp: new Date().toISOString() 
+  });
 });
 
 app.get("/health", async (_req: express.Request, res: express.Response) => {
@@ -187,7 +240,39 @@ app.get("/health/cache", async (_req: express.Request, res: express.Response) =>
   }
 });
 
-// Graceful shutdown handler
+// ============================================
+// ERROR HANDLING MIDDLEWARE
+// ============================================
+
+// Handle timeout errors
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err.timeout) {
+    return res.status(408).json({
+      success: false,
+      message: 'Request timeout'
+    });
+  }
+  next(err);
+});
+
+// Global error handler
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  logger.error('Unhandled error:', err);
+  
+  const statusCode = err.status || 500;
+  const message = err.message || 'Internal server error';
+  
+  res.status(statusCode).json({
+    success: false,
+    message: message,
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+  });
+});
+
+// ============================================
+// GRACEFUL SHUTDOWN
+// ============================================
+
 let server: any;
 
 const gracefulShutdown = async (signal: string) => {
@@ -215,9 +300,13 @@ const gracefulShutdown = async (signal: string) => {
   }, 30000);
 };
 
-// Start server
+// ============================================
+// START SERVER
+// ============================================
+
 server = app.listen(Number(port), process.env.NODE_ENV === 'production' ? "127.0.0.1" : "0.0.0.0", () => {
   logger.info(`Server is running on port ${port} in ${process.env.NODE_ENV || 'development'} mode`);
+  
   // Print network interfaces
   const nets = networkInterfaces();
   logger.debug("Available network interfaces:");

@@ -14,7 +14,7 @@ import {
     getJobStats,
     getEarnings,
     markJobAsPaid
-} from "../controllers/serviceRequestController";
+} from "../controllers/users/serviceRequestController";
 import { authenticate } from "../middleware/auth";
 
 const router = express.Router();

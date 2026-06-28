@@ -7,7 +7,7 @@ import {
     getPendingRatings,
     approveRating,
     rejectRating,
-} from "../controllers/ratingController";
+} from "../controllers/users/ratingController";
 import { authenticate } from "../middleware/auth";
 
 const router = express.Router();

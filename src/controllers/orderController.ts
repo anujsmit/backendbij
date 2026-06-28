@@ -12,7 +12,9 @@ import {
     serviceItems,
     serviceSubCategories,
     services,
-    users, 
+    users,           // Admin users only
+    userAccounts,    // ✅ Customer accounts
+    mistriAccounts,  // ✅ Mistri accounts
     mistriProfiles,
     cartItems,
     serviceCategories,
@@ -61,7 +63,6 @@ async function ensureCategoriesForServiceItems(serviceItemsData: any[]): Promise
     const enrichedItems = [];
 
     for (const item of serviceItemsData) {
-        // If item already has a category, use it
         if (item.categoryId) {
             enrichedItems.push(item);
             continue;
@@ -69,9 +70,7 @@ async function ensureCategoriesForServiceItems(serviceItemsData: any[]): Promise
 
         console.log(`🔍 Checking category for item: ${item.name} (${item.id})`);
 
-        // Try to find category through sub-category
         if (item.subCategoryId) {
-            // Check if sub-category exists
             let subCategory = await db
                 .select({
                     id: serviceSubCategories.id,
@@ -82,15 +81,12 @@ async function ensureCategoriesForServiceItems(serviceItemsData: any[]): Promise
                 .where(eq(serviceSubCategories.id, item.subCategoryId))
                 .limit(1);
 
-            // If sub-category doesn't exist, create it
             if (subCategory.length === 0) {
                 console.log(`📝 Creating sub-category for item: ${item.name}`);
                 
-                // Create a category first
                 const categoryName = determineCategoryFromItemName(item.name);
                 let categoryId = await getOrCreateCategory(categoryName);
                 
-                // Create sub-category
                 const [newSubCategory] = await db
                     .insert(serviceSubCategories)
                     .values({
@@ -103,7 +99,6 @@ async function ensureCategoriesForServiceItems(serviceItemsData: any[]): Promise
                 
                 subCategory = [newSubCategory];
                 
-                // Update the service item with the new sub-category
                 await db
                     .update(serviceItems)
                     .set({ subCategoryId: newSubCategory.id })
@@ -112,7 +107,6 @@ async function ensureCategoriesForServiceItems(serviceItemsData: any[]): Promise
                 console.log(`✅ Created sub-category: ${newSubCategory.name} with category ID: ${categoryId}`);
             }
 
-            // Now get the category
             if (subCategory[0]?.categoryId) {
                 const category = await db
                     .select({
@@ -134,12 +128,10 @@ async function ensureCategoriesForServiceItems(serviceItemsData: any[]): Promise
             }
         }
 
-        // If still no category, create one based on item name
         console.log(`📝 Creating new category for item: ${item.name}`);
         const categoryName = determineCategoryFromItemName(item.name);
         const categoryId = await getOrCreateCategory(categoryName);
         
-        // Create a sub-category for this item
         const [newSubCategory] = await db
             .insert(serviceSubCategories)
             .values({
@@ -150,7 +142,6 @@ async function ensureCategoriesForServiceItems(serviceItemsData: any[]): Promise
             })
             .returning();
 
-        // Update the service item
         await db
             .update(serviceItems)
             .set({ subCategoryId: newSubCategory.id })
@@ -196,7 +187,6 @@ function determineCategoryFromItemName(itemName: string): string {
  * Get or create a category
  */
 async function getOrCreateCategory(categoryName: string): Promise<number> {
-    // Check if category exists
     const existingCategory = await db
         .select({ id: services.id })
         .from(services)
@@ -207,7 +197,6 @@ async function getOrCreateCategory(categoryName: string): Promise<number> {
         return existingCategory[0].id;
     }
 
-    // Create new category
     console.log(`📝 Creating new service category: ${categoryName}`);
     const [newCategory] = await db
         .insert(services)
@@ -238,12 +227,14 @@ function getCategoryColor(categoryName: string): string {
     return colors[categoryName] || '#95a5a6';
 }
 
-/**
- * Create a new order with multiple items, split by category
- */
+// ============================================
+// CREATE ORDER
+// ============================================
+
 export const createOrder = async (req: Request, res: Response) => {
     try {
-        const userId = req.user?.id;
+        // ✅ FIXED: Use userId from decoded token
+        const userId = (req as any).user?.userId;
         if (!userId) {
             return res.status(401).json({ success: false, message: "Unauthorized" });
         }
@@ -271,14 +262,10 @@ export const createOrder = async (req: Request, res: Response) => {
             email 
         } = parsed.data;
 
-        // Log the items for debugging
         console.log('📦 Order items received:', JSON.stringify(items, null, 2));
-        console.log('📦 Item IDs:', items.map(i => i.serviceItemId));
 
-        // Get all service items with their details
         const itemIds = items.map(i => i.serviceItemId);
         
-        // Get service items with category info
         let serviceItemsData = await db
             .select({
                 id: serviceItems.id,
@@ -296,7 +283,6 @@ export const createOrder = async (req: Request, res: Response) => {
             .leftJoin(services, eq(serviceSubCategories.categoryId, services.id))
             .where(inArray(serviceItems.id, itemIds));
 
-        // If no items found, try without joins
         if (serviceItemsData.length === 0) {
             console.log('⚠️ No service items found with joins, trying without...');
             
@@ -331,11 +317,9 @@ export const createOrder = async (req: Request, res: Response) => {
 
         console.log('✅ Found service items:', serviceItemsData.length);
 
-        // Ensure all items have categories
         const enrichedItems = await ensureCategoriesForServiceItems(serviceItemsData);
         console.log('📊 Enriched items with categories:', enrichedItems.map(i => ({ name: i.name, category: i.categoryName })));
 
-        // Group items by category
         const itemsByCategory: Record<string, {
             categoryId: number;
             categoryName: string;
@@ -351,7 +335,6 @@ export const createOrder = async (req: Request, res: Response) => {
             const itemSubtotal = price * quantity;
             orderSubtotal += itemSubtotal;
 
-            // Ensure we have a category
             if (!serviceItem.categoryId) {
                 console.error(`❌ Item still has no category after enrichment: ${serviceItem.name}`);
                 continue;
@@ -384,7 +367,6 @@ export const createOrder = async (req: Request, res: Response) => {
             itemsByCategory[categoryKey].subtotal += itemSubtotal;
         }
 
-        // Check if we have any categories
         if (Object.keys(itemsByCategory).length === 0) {
             return res.status(400).json({
                 success: false,
@@ -394,20 +376,17 @@ export const createOrder = async (req: Request, res: Response) => {
 
         console.log('📊 Items grouped by category:', Object.keys(itemsByCategory));
 
-        // Calculate taxes and totals
         const orderTax = orderSubtotal * 0.13;
         const orderDeliveryFee = 50;
         const orderDiscount = 0;
         const orderTotal = orderSubtotal + orderTax + orderDeliveryFee - orderDiscount;
 
-        // Get customer details for email
-        const customer = await db.query.users.findFirst({
-            where: eq(users.id, userId),
+        // ✅ FIXED: Get customer details from userAccounts
+        const customer = await db.query.userAccounts.findFirst({
+            where: eq(userAccounts.id, userId),
         });
 
-        // Create order in transaction with sub-orders
         const result = await db.transaction(async (tx) => {
-            // 1. Create the main order
             const [order] = await tx.insert(orders).values({
                 customerId: userId,
                 subtotal: orderSubtotal.toString(),
@@ -428,7 +407,6 @@ export const createOrder = async (req: Request, res: Response) => {
                 paymentStatus: 'pending',
             }).returning();
 
-            // 2. Create order items and sub-orders for each category
             const orderItemIds: string[] = [];
 
             for (const [categoryKey, categoryData] of Object.entries(itemsByCategory)) {
@@ -437,7 +415,6 @@ export const createOrder = async (req: Request, res: Response) => {
                 const catTax = catSubtotal * 0.13;
                 const catTotal = catSubtotal + catTax;
 
-                // Create sub-order for this category
                 const [subOrder] = await tx.insert(subOrders).values({
                     orderId: order.id,
                     categoryId: categoryData.categoryId,
@@ -448,9 +425,7 @@ export const createOrder = async (req: Request, res: Response) => {
                     total: catTotal.toString(),
                 }).returning();
 
-                // Create order items and sub-order items
                 for (const item of catItems) {
-                    // Create main order item
                     const [orderItem] = await tx.insert(orderItems).values({
                         orderId: order.id,
                         serviceItemId: item.serviceItemId,
@@ -466,7 +441,6 @@ export const createOrder = async (req: Request, res: Response) => {
 
                     orderItemIds.push(orderItem.id);
 
-                    // Create sub-order item
                     await tx.insert(subOrderItems).values({
                         subOrderId: subOrder.id,
                         orderItemId: orderItem.id,
@@ -481,7 +455,6 @@ export const createOrder = async (req: Request, res: Response) => {
                     });
                 }
 
-                // Create sub-order timeline entry
                 await tx.insert(subOrderTimeline).values({
                     subOrderId: subOrder.id,
                     status: 'pending',
@@ -490,7 +463,6 @@ export const createOrder = async (req: Request, res: Response) => {
                 });
             }
 
-            // 3. Create main order timeline entry
             await tx.insert(orderTimeline).values({
                 orderId: order.id,
                 status: 'pending',
@@ -505,10 +477,7 @@ export const createOrder = async (req: Request, res: Response) => {
             };
         });
 
-        // ============================================
-        // SEND EMAIL NOTIFICATIONS
-        // ============================================
-        
+        // Send email notifications
         try {
             const emailData = {
                 orderId: result.order.id,
@@ -539,11 +508,7 @@ export const createOrder = async (req: Request, res: Response) => {
             console.error('❌ Failed to send order emails:', emailError);
         }
 
-        // ============================================
-        // SEND NOTIFICATIONS
-        // ============================================
-
-        // Notify admins
+        // ✅ FIXED: Notify admins from users table
         const admins = await db.query.users.findMany({
             where: eq(users.role, "admin"),
         });
@@ -575,7 +540,6 @@ export const createOrder = async (req: Request, res: Response) => {
             console.error('Failed to notify customer:', error);
         }
 
-        // Create audit log
         await createAuditLog({
             entityType: "order",
             entityId: result.order.id,
@@ -607,12 +571,14 @@ export const createOrder = async (req: Request, res: Response) => {
     }
 };
 
-/**
- * Get customer orders
- */
+// ============================================
+// GET CUSTOMER ORDERS
+// ============================================
+
 export const getCustomerOrders = async (req: Request, res: Response) => {
     try {
-        const userId = req.user?.id;
+        // ✅ FIXED: Use userId from decoded token
+        const userId = (req as any).user?.userId;
         if (!userId) {
             return res.status(401).json({ success: false, message: "Unauthorized" });
         }
@@ -629,7 +595,6 @@ export const getCustomerOrders = async (req: Request, res: Response) => {
 
         const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-        // Get orders with their items and sub-orders
         const ordersList = await db
             .select({
                 id: orders.id,
@@ -659,10 +624,8 @@ export const getCustomerOrders = async (req: Request, res: Response) => {
             .limit(limitNum)
             .offset(offset);
 
-        // Get items and sub-orders for each order
         const ordersWithDetails = await Promise.all(
             ordersList.map(async (order) => {
-                // Get sub-orders
                 const subOrdersList = await db
                     .select({
                         id: subOrders.id,
@@ -678,7 +641,6 @@ export const getCustomerOrders = async (req: Request, res: Response) => {
                     .from(subOrders)
                     .where(eq(subOrders.orderId, order.id));
 
-                // Get all items
                 const items = await db
                     .select({
                         id: orderItems.id,
@@ -704,7 +666,6 @@ export const getCustomerOrders = async (req: Request, res: Response) => {
             })
         );
 
-        // Get total count
         const countResult = await db
             .select({ count: sql<number>`count(*)::int` })
             .from(orders)
@@ -730,12 +691,14 @@ export const getCustomerOrders = async (req: Request, res: Response) => {
     }
 };
 
-/**
- * Get order by ID with items and sub-orders
- */
+// ============================================
+// GET ORDER BY ID
+// ============================================
+
 export const getOrderById = async (req: Request, res: Response) => {
     try {
-        const userId = req.user?.id;
+        // ✅ FIXED: Use userId from decoded token
+        const userId = (req as any).user?.userId;
         const orderId = req.params.id;
 
         if (!userId) {
@@ -755,7 +718,6 @@ export const getOrderById = async (req: Request, res: Response) => {
             });
         }
 
-        // Get order items
         const items = await db
             .select({
                 id: orderItems.id,
@@ -771,7 +733,6 @@ export const getOrderById = async (req: Request, res: Response) => {
             .from(orderItems)
             .where(eq(orderItems.orderId, orderId));
 
-        // Get sub-orders
         const subOrdersList = await db
             .select({
                 id: subOrders.id,
@@ -791,7 +752,6 @@ export const getOrderById = async (req: Request, res: Response) => {
             .from(subOrders)
             .where(eq(subOrders.orderId, orderId));
 
-        // Get sub-order items
         const subOrdersWithItems = await Promise.all(
             subOrdersList.map(async (subOrder) => {
                 const subItems = await db
@@ -815,7 +775,6 @@ export const getOrderById = async (req: Request, res: Response) => {
             })
         );
 
-        // Get timeline
         const timeline = await db
             .select({
                 id: orderTimeline.id,
@@ -828,21 +787,21 @@ export const getOrderById = async (req: Request, res: Response) => {
             .where(eq(orderTimeline.orderId, orderId))
             .orderBy(desc(orderTimeline.createdAt));
 
-        // Get mistri details if assigned
+        // ✅ FIXED: Use mistriAccounts for mistri details
         let mistriDetails = null;
         if (order.assignedMistriId) {
             const mistri = await db
                 .select({
-                    id: users.id,
-                    fullName: users.fullName,
-                    phoneNumber: users.phoneNumber,
+                    id: mistriAccounts.id,
+                    fullName: mistriAccounts.fullName,
+                    phoneNumber: mistriAccounts.phoneNumber,
                     profilePhotoUrl: mistriProfiles.profilePhotoUrl,
                     averageRating: mistriProfiles.averageRating,
                     jobsCompleted: mistriProfiles.jobsCompleted,
                 })
-                .from(users)
-                .leftJoin(mistriProfiles, eq(users.id, mistriProfiles.userId))
-                .where(eq(users.id, order.assignedMistriId))
+                .from(mistriAccounts)
+                .leftJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
+                .where(eq(mistriAccounts.id, order.assignedMistriId))
                 .limit(1);
             mistriDetails = mistri[0] || null;
         }
@@ -868,12 +827,14 @@ export const getOrderById = async (req: Request, res: Response) => {
     }
 };
 
-/**
- * Cancel order (Customer only)
- */
+// ============================================
+// CANCEL ORDER
+// ============================================
+
 export const cancelOrder = async (req: Request, res: Response) => {
     try {
-        const userId = req.user?.id;
+        // ✅ FIXED: Use userId from decoded token
+        const userId = (req as any).user?.userId;
         const orderId = req.params.id;
         const { reason } = req.body;
 
@@ -912,7 +873,6 @@ export const cancelOrder = async (req: Request, res: Response) => {
             .where(eq(orders.id, orderId))
             .returning();
 
-        // Cancel all sub-orders
         await db.update(subOrders)
             .set({
                 status: 'cancelled',
@@ -920,14 +880,12 @@ export const cancelOrder = async (req: Request, res: Response) => {
             })
             .where(eq(subOrders.orderId, orderId));
 
-        // Add to timeline
         await db.insert(orderTimeline).values({
             orderId: orderId,
             status: 'cancelled',
             note: `Cancelled by customer: ${reason || 'No reason provided'}`,
         });
 
-        // Notify customer
         try {
             await createNotification(
                 userId,
@@ -954,12 +912,14 @@ export const cancelOrder = async (req: Request, res: Response) => {
     }
 };
 
-/**
- * Get order counts by status
- */
+// ============================================
+// GET ORDER COUNTS
+// ============================================
+
 export const getOrderCounts = async (req: Request, res: Response) => {
     try {
-        const userId = req.user?.id;
+        // ✅ FIXED: Use userId from decoded token
+        const userId = (req as any).user?.userId;
         if (!userId) {
             return res.status(401).json({ success: false, message: "Unauthorized" });
         }

@@ -1,5 +1,5 @@
 import express from "express";
-import { createMistriProfile, getNearbyMistris, getTargetedRequests, getMistriProfile, updateMistriProfile, getAcceptedJobs } from "../controllers/mistriController";
+import { createMistriProfile, getNearbyMistris, getTargetedRequests, getMistriProfile, updateMistriProfile, getAcceptedJobs } from "../controllers/mistri/mistriController";
 import { authenticate } from "../middleware/auth";
 
 const router = express.Router();

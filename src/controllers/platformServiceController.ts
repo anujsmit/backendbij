@@ -14,7 +14,7 @@ export const getPlatformServices = async (req: Request, res: Response) => {
                 imageUrl: platformServices.imageUrl,
                 isActive: platformServices.isActive,
                 isPopular: platformServices.isPopular,
-                duration_minutes: platformServices.duration_minutes,
+                duration_minutes: platformServices.durationMinutes,
                 categoryId: services.id,
                 categoryName: services.serviceName,
                 categoryIconUrl: services.customIconUrl,
@@ -75,7 +75,7 @@ export const getPlatformServicesByCategory = async (req: Request, res: Response)
                 description: platformServices.description,
                 price: platformServices.price,
                 imageUrl: platformServices.imageUrl,
-                duration_minutes: platformServices.duration_minutes,
+                duration_minutes: platformServices.durationMinutes,
                 isActive: platformServices.isActive,
                 isPopular: platformServices.isPopular, // Add this line
             })
@@ -123,7 +123,7 @@ export const getPopularServices = async (req: Request, res: Response) => {
                 description: platformServices.description,
                 price: platformServices.price,
                 imageUrl: platformServices.imageUrl,
-                duration_minutes: platformServices.duration_minutes,
+                duration_minutes: platformServices.durationMinutes,
                 isPopular: platformServices.isPopular,
                 categoryId: services.id,
                 categoryName: services.serviceName,

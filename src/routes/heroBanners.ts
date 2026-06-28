@@ -11,7 +11,7 @@ import {
     toggleBannerActive,
     bulkDeleteHeroBanners,
     duplicateHeroBanner
-} from "../controllers/heroBannerController";
+} from "../controllers/admin/heroBannerController";
 import { authenticate } from "../middleware/auth";
 import { requireAdmin } from "../middleware/requireAdmin";
 
