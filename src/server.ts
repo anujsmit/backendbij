@@ -29,7 +29,7 @@ import adminRoutes from "./routes/admin/admin";
 import mistriRoutes from "./routes/mistri";
 
 // User Routes
-import userRoutes from "./routes/user";
+import userRoutes from "./routes/auth/userAuth";
 
 // Public Routes
 import publicRoutes from "./routes/public";
