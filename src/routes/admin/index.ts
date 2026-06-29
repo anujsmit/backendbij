@@ -65,6 +65,9 @@ import {
     getAdminRatings,
     approveRating,
     rejectRating,
+    getRatingStats,
+    getMistriRatings,
+    deleteRating,
 } from "../../controllers/admin/adminRatingController";
 import {
     getAdminHeroBanners,
@@ -276,8 +279,11 @@ router.delete("/hero-banners/:id", deleteHeroBanner);
 // RATINGS & REVIEWS
 // ============================================
 router.get("/ratings", getAdminRatings);
+router.get("/ratings/stats/:mistriId", getRatingStats);
+router.get("/ratings/mistri/:mistriId", getMistriRatings);
 router.post("/ratings/:id/approve", approveRating);
 router.post("/ratings/:id/reject", rejectRating);
+router.delete("/ratings/:id", deleteRating);
 
 // ============================================
 // SERVICE REQUESTS

@@ -96,6 +96,13 @@ export const authenticate = async (
         // Verify token
         const decoded = verifyToken(token);
 
+        // ✅ Log for debugging
+        logger.debug('[Auth] Decoded token:', {
+            userId: decoded.userId,
+            type: decoded.type,
+            accountType: decoded.accountType,
+        });
+
         // Find user in unified users table
         const user = await findUserById(decoded.userId);
 
@@ -106,8 +113,12 @@ export const authenticate = async (
             });
         }
 
-        // Verify account type matches
+        // ✅ Check account type matches
         if (user.accountType !== decoded.accountType) {
+            logger.warn('[Auth] Account type mismatch:', {
+                tokenAccountType: decoded.accountType,
+                dbAccountType: user.accountType,
+            });
             return res.status(401).json({
                 success: false,
                 message: "Invalid account type",
@@ -123,18 +134,24 @@ export const authenticate = async (
         }
 
         // Attach user data to request
-        (req as any).user = decoded;
+        (req as any).user = {
+            userId: decoded.userId,
+            accountType: decoded.accountType,
+            type: decoded.type,
+        };
         (req as any).accountType = decoded.accountType;
 
         next();
     } catch (error) {
         if (error instanceof jwt.JsonWebTokenError) {
+            logger.warn('[Auth] JWT Error:', error.message);
             return res.status(401).json({
                 success: false,
                 message: "Invalid token. Please authenticate again.",
             });
         }
         if (error instanceof jwt.TokenExpiredError) {
+            logger.warn('[Auth] Token expired');
             return res.status(401).json({
                 success: false,
                 message: "Token expired. Please authenticate again.",
@@ -383,12 +400,46 @@ export const requireAdmin = async (
     res: Response,
     next: NextFunction
 ) => {
-    if ((req as any).accountType !== 'admin') {
+    const accountType = (req as any).accountType;
+    const user = (req as any).user;
+
+    logger.debug('[requireAdmin] Account type:', accountType);
+    logger.debug('[requireAdmin] User:', user);
+
+    if (!accountType || accountType !== 'admin') {
         return res.status(403).json({
             success: false,
-            message: "Admin access required",
+            message: `Admin access required. Your role: ${accountType || 'none'}`,
         });
     }
+
+    // ✅ Verify in database
+    try {
+        const adminUser = await db.query.users.findFirst({
+            where: eq(users.id, user.userId),
+        });
+
+        if (!adminUser || adminUser.accountType !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: "Admin user not found or invalid role",
+            });
+        }
+
+        if (!adminUser.isActive) {
+            return res.status(403).json({
+                success: false,
+                message: "Admin account is deactivated",
+            });
+        }
+    } catch (error) {
+        logger.error('[requireAdmin] Database error:', error);
+        return res.status(500).json({
+            success: false,
+            message: "Error verifying admin status",
+        });
+    }
+
     next();
 };
 
@@ -397,7 +448,9 @@ export const requireMistri = async (
     res: Response,
     next: NextFunction
 ) => {
-    if ((req as any).accountType !== 'mistri') {
+    const accountType = (req as any).accountType;
+
+    if (!accountType || accountType !== 'mistri') {
         return res.status(403).json({
             success: false,
             message: "Mistri access required",
@@ -411,7 +464,9 @@ export const requireUser = async (
     res: Response,
     next: NextFunction
 ) => {
-    if ((req as any).accountType !== 'user') {
+    const accountType = (req as any).accountType;
+
+    if (!accountType || accountType !== 'user') {
         return res.status(403).json({
             success: false,
             message: "User access required",
@@ -583,8 +638,6 @@ export const authenticateWithPermission = (requiredPermission: string) => {
             }
 
             // Get employee profile for permissions
-            // This assumes you have an employee_profiles table
-            // If not, you can skip this check or implement it differently
             try {
                 const { employeeProfiles } = await import("../db/schema");
                 const profile = await db.query.employeeProfiles.findFirst({

@@ -4,7 +4,7 @@ import { and, eq, desc, sql, inArray, gte, lt, lte, gt } from "drizzle-orm";
 import { db } from "../../db";
 import { 
   serviceRequests, 
-  users,               // ✅ Unified users table (customers, mistris, admins)
+  users,
   mistriProfiles, 
   services, 
   platformServices, 
@@ -20,6 +20,30 @@ import { sendSms } from "../../services/sms";
 import { shouldSendNotification } from "../../services/notificationPreferences";
 import { initiateDispatch, stopDispatch } from "../../services/dispatch";
 import { cacheService } from "../../services/cacheService";
+import { createClient } from "@supabase/supabase-js";
+import sharp from "sharp";
+import { logger } from "../../utils/logger";
+
+// Initialize Supabase client conditionally
+let supabase: ReturnType<typeof createClient> | null = null;
+
+try {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+    
+    if (supabaseUrl && supabaseKey && supabaseUrl !== 'your-supabase-url' && supabaseKey !== 'your-supabase-key') {
+        supabase = createClient(supabaseUrl, supabaseKey);
+        logger.info('Supabase client initialized successfully');
+    } else {
+        logger.warn('Supabase environment variables not properly set. Image upload features will use fallback mode.');
+    }
+} catch (error) {
+    logger.error('Failed to initialize Supabase client:', error);
+}
+
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
 
 function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
@@ -33,7 +57,10 @@ function calculateDistance(lat1: number, lng1: number, lat2: number, lng2: numbe
   return R * c;
 }
 
-// Updated schema to support both category and sub-category selection
+// ============================================
+// SCHEMA VALIDATION
+// ============================================
+
 const createServiceRequestSchema = z.object({
   type: z.string(),
   categoryId: z.number().int().positive().optional(),
@@ -229,7 +256,7 @@ export const createServiceRequest = async (req: Request, res: Response) => {
       }
     }
 
-    // ✅ Notify admins from unified users table
+    // Notify admins from unified users table
     const admins = await db.query.users.findMany({
       where: eq(users.accountType, "admin"),
     });
@@ -433,7 +460,7 @@ export const getServiceRequestById = async (req: Request, res: Response) => {
       selectedServices,
     };
 
-    // ✅ Get mistri info from unified users table
+    // Get mistri info from unified users table
     if (requestRow.assignedMistriId) {
       const mistriInfo = await db
         .select({
@@ -465,7 +492,7 @@ export const getServiceRequestById = async (req: Request, res: Response) => {
       }
     }
 
-    // ✅ Get customer info from unified users table
+    // Get customer info from unified users table
     if ((requestRow.status === 'assigned' || requestRow.status === 'completed') && requestRow.assignedMistriId) {
       const customerInfo = await db
         .select({
@@ -562,7 +589,7 @@ export const acceptServiceRequest = async (req: Request, res: Response) => {
 
     stopDispatch(id);
 
-    // ✅ Get mistri info from unified users table
+    // Get mistri info from unified users table
     const mistri = await db.query.users.findFirst({
       where: and(
         eq(users.id, userId),
@@ -589,7 +616,7 @@ export const acceptServiceRequest = async (req: Request, res: Response) => {
       metadata: { assignedAt: new Date().toISOString() }
     });
 
-    // ✅ Get customer info from unified users table
+    // Get customer info from unified users table
     const customer = await db.query.users.findFirst({
       where: and(
         eq(users.id, reqRow.customerId),
@@ -654,7 +681,7 @@ export const declineServiceRequest = async (req: Request, res: Response) => {
       .where(eq(serviceRequests.id, id))
       .returning();
 
-    // ✅ Get mistri info from unified users table
+    // Get mistri info from unified users table
     const mistri = await db.query.users.findFirst({
       where: and(
         eq(users.id, userId),
@@ -783,7 +810,7 @@ export const getMistriAssignedRequests = async (req: Request, res: Response) => 
 };
 
 // ============================================
-// COMPLETE SERVICE REQUEST
+// COMPLETE SERVICE REQUEST (Legacy)
 // ============================================
 
 export const completeServiceRequest = async (req: Request, res: Response) => {
@@ -846,7 +873,7 @@ export const completeServiceRequest = async (req: Request, res: Response) => {
       metadata: { jobsCompletedIncrement: 1 }
     });
 
-    // ✅ Get customer info from unified users table
+    // Get customer info from unified users table
     const customer = await db.query.users.findFirst({
       where: and(
         eq(users.id, reqRow.customerId),
@@ -948,80 +975,6 @@ export const toggleUnpaidServiceRequest = async (req: Request, res: Response) =>
 };
 
 // ============================================
-// START WORK
-// ============================================
-
-export const startWork = async (req: Request, res: Response) => {
-  try {
-    const userId = (req as any).user?.userId;
-    const accountType = (req as any).user?.accountType;
-    const id = req.params.id as string;
-
-    if (!userId || accountType !== 'mistri') {
-      return res.status(403).json({
-        success: false,
-        message: "Only mistris can start work"
-      });
-    }
-
-    const existing = await db.select().from(serviceRequests).where(eq(serviceRequests.id, id)).limit(1);
-    if (existing.length === 0) {
-      return res.status(404).json({ success: false, message: "Service request not found" });
-    }
-
-    const reqRow = existing[0];
-
-    if (reqRow.assignedMistriId !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: "You are not assigned to this request"
-      });
-    }
-
-    if (reqRow.status !== 'assigned') {
-      return res.status(400).json({
-        success: false,
-        message: "Can only start work on assigned requests"
-      });
-    }
-
-    if (reqRow.startedWorkAt) {
-      return res.status(400).json({
-        success: false,
-        message: "Work already started",
-        startedAt: reqRow.startedWorkAt
-      });
-    }
-
-    const [updated] = await db
-      .update(serviceRequests)
-      .set({ startedWorkAt: new Date() })
-      .where(eq(serviceRequests.id, id))
-      .returning();
-
-    await createAuditLog({
-      entityType: 'service_request',
-      entityId: id,
-      action: 'start_work',
-      performedBy: userId,
-      performedByRole: 'mistri',
-      oldValue: { startedWorkAt: null },
-      newValue: { startedWorkAt: new Date().toISOString() },
-      metadata: {}
-    });
-
-    return res.json({
-      success: true,
-      message: "Work started",
-      request: updated
-    });
-  } catch (error) {
-    console.error("Error starting work:", error);
-    return res.status(500).json({ success: false, message: "Failed to start work" });
-  }
-};
-
-// ============================================
 // GET JOB HISTORY
 // ============================================
 
@@ -1076,7 +1029,7 @@ export const getJobHistory = async (req: Request, res: Response) => {
       );
     }
 
-    // ✅ Get customer name from unified users table
+    // Get customer name from unified users table
     const jobs = await db
       .select({
         id: serviceRequests.id,
@@ -1259,7 +1212,7 @@ export const getEarnings = async (req: Request, res: Response) => {
       startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     }
 
-    // ✅ Get customer name from unified users table
+    // Get customer name from unified users table
     const completedJobs = await db
       .select({
         id: serviceRequests.id,
@@ -1505,6 +1458,604 @@ export const markJobAsPaid = async (req: Request, res: Response) => {
     return res.status(500).json({
       success: false,
       message: "Failed to mark job as paid"
+    });
+  }
+};
+
+// ============================================
+// START WORK (Mistri) - NEW FLOW
+// ============================================
+
+export const startWork = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.userId;
+    const accountType = (req as any).user?.accountType;
+    const id = req.params.id as string;
+
+    if (!userId || accountType !== 'mistri') {
+      return res.status(403).json({
+        success: false,
+        message: "Only mistris can start work"
+      });
+    }
+
+    const existing = await db.select().from(serviceRequests).where(eq(serviceRequests.id, id)).limit(1);
+    if (existing.length === 0) {
+      return res.status(404).json({ success: false, message: "Service request not found" });
+    }
+
+    const reqRow = existing[0];
+
+    if (reqRow.assignedMistriId !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not assigned to this request"
+      });
+    }
+
+    if (reqRow.status !== 'assigned') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot start work on request with status '${reqRow.status}'. Only assigned requests can be started.`
+      });
+    }
+
+    if (reqRow.startedWorkAt) {
+      return res.status(400).json({
+        success: false,
+        message: "Work already started",
+        startedAt: reqRow.startedWorkAt
+      });
+    }
+
+    const [updated] = await db
+      .update(serviceRequests)
+      .set({ 
+        startedWorkAt: new Date()
+      })
+      .where(eq(serviceRequests.id, id))
+      .returning();
+
+    // Update mistri availability
+    await db.update(mistriProfiles)
+      .set({
+        availabilityStatus: 'on_work_available',
+        isAvailable: true
+      })
+      .where(eq(mistriProfiles.mistriId, userId));
+
+    // Notify customer
+    const mistri = await db.query.users.findFirst({
+      where: and(
+        eq(users.id, userId),
+        eq(users.accountType, "mistri")
+      ),
+    });
+
+    await createNotification(
+      reqRow.customerId,
+      'Work Started',
+      `${mistri?.fullName || 'The mistri'} has started working on your ${reqRow.type} service request.`,
+      'work_started',
+      id
+    );
+
+    await createAuditLog({
+      entityType: 'service_request',
+      entityId: id,
+      action: 'start_work',
+      performedBy: userId,
+      performedByRole: 'mistri',
+      oldValue: { startedWorkAt: null },
+      newValue: { startedWorkAt: new Date().toISOString() },
+      metadata: {}
+    });
+
+    return res.json({
+      success: true,
+      message: "Work started successfully",
+      request: updated
+    });
+  } catch (error) {
+    console.error("Error starting work:", error);
+    return res.status(500).json({ success: false, message: "Failed to start work" });
+  }
+};
+
+// ============================================
+// MARK ARRIVED AT LOCATION (Mistri)
+// ============================================
+
+export const markArrived = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.userId;
+    const accountType = (req as any).user?.accountType;
+    const id = req.params.id as string;
+    const { lat, lng } = req.body;
+
+    if (!userId || accountType !== 'mistri') {
+      return res.status(403).json({
+        success: false,
+        message: "Only mistris can mark arrival"
+      });
+    }
+
+    const existing = await db.select().from(serviceRequests).where(eq(serviceRequests.id, id)).limit(1);
+    if (existing.length === 0) {
+      return res.status(404).json({ success: false, message: "Service request not found" });
+    }
+
+    const reqRow = existing[0];
+
+    if (reqRow.assignedMistriId !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not assigned to this request"
+      });
+    }
+
+    if (reqRow.status !== 'assigned') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot mark arrival for request with status '${reqRow.status}'. Only assigned requests can be marked as arrived.`
+      });
+    }
+
+    if (reqRow.arrivedAt) {
+      return res.status(400).json({
+        success: false,
+        message: "Already marked as arrived",
+        arrivedAt: reqRow.arrivedAt
+      });
+    }
+
+    // Calculate distance from destination
+    let distance = null;
+    if (lat && lng && reqRow.lat && reqRow.lng) {
+      distance = calculateDistance(
+        parseFloat(lat), 
+        parseFloat(lng), 
+        parseFloat(reqRow.lat), 
+        parseFloat(reqRow.lng)
+      );
+    }
+
+    const [updated] = await db
+      .update(serviceRequests)
+      .set({ 
+        arrivedAt: new Date(),
+        arrivalLat: lat || null,
+        arrivalLng: lng || null,
+        arrivalDistance: distance !== null ? distance.toString() : null
+      })
+      .where(eq(serviceRequests.id, id))
+      .returning();
+
+    // Notify customer
+    const mistri = await db.query.users.findFirst({
+      where: and(
+        eq(users.id, userId),
+        eq(users.accountType, "mistri")
+      ),
+    });
+
+    await createNotification(
+      reqRow.customerId,
+      'Mistri Has Arrived',
+      `${mistri?.fullName || 'The mistri'} has arrived at your location for the ${reqRow.type} service.`,
+      'mistri_arrived',
+      id
+    );
+
+    await createAuditLog({
+      entityType: 'service_request',
+      entityId: id,
+      action: 'arrived',
+      performedBy: userId,
+      performedByRole: 'mistri',
+      oldValue: { arrivedAt: null },
+      newValue: { arrivedAt: new Date().toISOString(), distance },
+      metadata: { lat, lng, distance }
+    });
+
+    return res.json({
+      success: true,
+      message: "Arrival marked successfully",
+      request: updated,
+      distance
+    });
+  } catch (error) {
+    console.error("Error marking arrival:", error);
+    return res.status(500).json({ success: false, message: "Failed to mark arrival" });
+  }
+};
+
+// ============================================
+// UPLOAD COMPLETION PHOTOS (Helper)
+// ============================================
+
+const uploadCompletionPhotos = async (photos: string[], requestId: string): Promise<string[]> => {
+  if (!supabase) {
+    logger.warn(`[DEV] Supabase not available. Returning placeholder URLs for request ${requestId}`);
+    return photos.map((_, index) => 
+      `https://placehold.co/800x600/10B981/FFFFFF?text=Completion+Photo+${index + 1}`
+    );
+  }
+
+  const uploadedUrls: string[] = [];
+
+  for (let i = 0; i < photos.length; i++) {
+    try {
+      const photo = photos[i];
+      let buffer: Buffer;
+      
+      // Check if it's a base64 string
+      if (photo.startsWith('data:image')) {
+        const base64Data = photo.split(',')[1];
+        buffer = Buffer.from(base64Data, 'base64');
+      } else if (photo.length > 1000) {
+        // Assume it's base64
+        buffer = Buffer.from(photo, 'base64');
+      } else {
+        // It's a URI, skip or handle differently
+        logger.warn(`Skipping non-base64 photo for request ${requestId}`);
+        continue;
+      }
+
+      // Compress image
+      const compressedBuffer = await sharp(buffer)
+        .resize({ width: 1200, fit: 'inside', withoutEnlargement: true })
+        .jpeg({ quality: 80, progressive: true })
+        .toBuffer();
+
+      const fileName = `completion_${requestId}_${Date.now()}_${i}.jpg`;
+
+      const { data: uploadData, error: uploadError } = await supabase
+        .storage
+        .from('job-completions')
+        .upload(fileName, compressedBuffer, { 
+          upsert: true, 
+          contentType: 'image/jpeg',
+          cacheControl: '3600'
+        });
+
+      if (uploadError) throw uploadError;
+
+      const { data: urlData } = supabase.storage
+        .from('job-completions')
+        .getPublicUrl(uploadData.path);
+
+      uploadedUrls.push(urlData.publicUrl);
+    } catch (error) {
+      logger.error(`Error uploading completion photo ${i + 1}:`, error);
+      uploadedUrls.push(`https://placehold.co/800x600/FF0000/FFFFFF?text=Upload+Error+${i + 1}`);
+    }
+  }
+
+  return uploadedUrls;
+};
+
+// ============================================
+// COMPLETE SERVICE REQUEST WITH PHOTOS (Mistri)
+// ============================================
+
+export const completeServiceRequestWithPhotos = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.userId;
+    const accountType = (req as any).user?.accountType;
+    const id = req.params.id as string;
+    const { photos, note } = req.body;
+
+    if (!userId || accountType !== 'mistri') {
+      return res.status(403).json({
+        success: false,
+        message: "Only mistris can complete requests"
+      });
+    }
+
+    const existing = await db.select().from(serviceRequests).where(eq(serviceRequests.id, id)).limit(1);
+    if (existing.length === 0) {
+      return res.status(404).json({ success: false, message: "Service request not found" });
+    }
+
+    const reqRow = existing[0];
+
+    if (reqRow.assignedMistriId !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not assigned to this request"
+      });
+    }
+
+    if (reqRow.status !== 'assigned') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot complete request with status '${reqRow.status}'. Only assigned requests can be completed.`
+      });
+    }
+
+    if (reqRow.completedAt) {
+      return res.status(400).json({
+        success: false,
+        message: "Request already completed",
+        completedAt: reqRow.completedAt
+      });
+    }
+
+    // Validate photos
+    if (!photos || !Array.isArray(photos) || photos.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "At least one completion photo is required"
+      });
+    }
+
+    if (photos.length > 5) {
+      return res.status(400).json({
+        success: false,
+        message: "Maximum 5 photos allowed"
+      });
+    }
+
+    // Upload photos
+    const photoUrls = await uploadCompletionPhotos(photos, id);
+
+    // Calculate duration
+    let durationMinutes = null;
+    if (reqRow.startedWorkAt) {
+      const duration = new Date().getTime() - new Date(reqRow.startedWorkAt).getTime();
+      durationMinutes = Math.round(duration / 60000);
+    }
+
+    const now = new Date();
+
+    // Update request with completion details
+    const [updated] = await db
+      .update(serviceRequests)
+      .set({
+        status: 'completed',
+        completedAt: now,
+        completionPhotos: photoUrls,
+        completionNote: note || null,
+        durationMinutes,
+        warrantyStartDate: now,
+        warrantyEndDate: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000), // 7 days warranty
+      })
+      .where(eq(serviceRequests.id, id))
+      .returning();
+
+    // Update mistri profile
+    await db
+      .update(mistriProfiles)
+      .set({
+        jobsCompleted: sql`${mistriProfiles.jobsCompleted} + 1`,
+        availabilityStatus: 'available',
+        isAvailable: true
+      })
+      .where(eq(mistriProfiles.mistriId, userId));
+
+    // Notify customer
+    const mistri = await db.query.users.findFirst({
+      where: and(
+        eq(users.id, userId),
+        eq(users.accountType, "mistri")
+      ),
+    });
+
+    await createNotification(
+      reqRow.customerId,
+      'Job Completed 🎉',
+      `${mistri?.fullName || 'The mistri'} has completed your ${reqRow.type} service request. Thank you for using ServeX!`,
+      'request_completed',
+      id
+    );
+
+    // Send SMS notification
+    const customer = await db.query.users.findFirst({
+      where: and(
+        eq(users.id, reqRow.customerId),
+        eq(users.accountType, "user")
+      ),
+    });
+
+    if (customer?.phoneNumber) {
+      try {
+        await sendSms(
+          customer.phoneNumber,
+          `SERVEX: Your ${reqRow.type} service request at ${reqRow.address} has been completed. Photos are available in the app. 7-day warranty applies from today. Thank you for using ServeX!`,
+          "service_completed"
+        );
+      } catch (smsError) {
+        console.error('Failed to send completion SMS:', smsError);
+      }
+    }
+
+    await createAuditLog({
+      entityType: 'service_request',
+      entityId: id,
+      action: 'status_change',
+      performedBy: userId,
+      performedByRole: 'mistri',
+      oldValue: { 
+        status: reqRow.status, 
+        completedAt: null 
+      },
+      newValue: { 
+        status: 'completed', 
+        completedAt: now.toISOString(),
+        durationMinutes,
+        photoCount: photoUrls.length,
+        warrantyEnd: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      },
+      metadata: { 
+        photos: photoUrls,
+        note: note || null,
+        durationMinutes 
+      }
+    });
+
+    // Clear cache
+    await cacheService.del(`pending_requests:*`);
+    await cacheService.del(`nearby_mistris:*`);
+
+    return res.status(200).json({
+      success: true,
+      message: "Job completed successfully",
+      request: updated,
+      photos: photoUrls,
+      warranty: {
+        startDate: now,
+        endDate: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+        durationDays: 7
+      }
+    });
+  } catch (error) {
+    console.error("Error completing service request:", error);
+    return res.status(500).json({ 
+      success: false, 
+      message: "Failed to complete request: " + (error as Error).message 
+    });
+  }
+};
+
+// ============================================
+// GET WARRANTY STATUS
+// ============================================
+
+export const getWarrantyStatus = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.userId;
+    const id = req.params.id as string;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated"
+      });
+    }
+
+    const existing = await db.select().from(serviceRequests).where(eq(serviceRequests.id, id)).limit(1);
+    if (existing.length === 0) {
+      return res.status(404).json({ success: false, message: "Service request not found" });
+    }
+
+    const reqRow = existing[0];
+
+    // Check authorization
+    const isCustomer = reqRow.customerId === userId;
+    const isMistri = reqRow.assignedMistriId === userId;
+    const isAdmin = (req as any).user?.accountType === 'admin';
+
+    if (!isCustomer && !isMistri && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to view warranty status"
+      });
+    }
+
+    if (reqRow.status !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: "Warranty is only available for completed jobs"
+      });
+    }
+
+    const now = new Date();
+    const hasWarranty = !!reqRow.warrantyEndDate;
+    
+    let isActive = false;
+    let daysRemaining = 0;
+    
+    if (hasWarranty && reqRow.warrantyEndDate) {
+      const warrantyEndDate = new Date(reqRow.warrantyEndDate);
+      isActive = warrantyEndDate > now;
+      daysRemaining = Math.max(0, Math.ceil((warrantyEndDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
+    }
+
+    return res.status(200).json({
+      success: true,
+      warranty: {
+        hasWarranty,
+        startDate: reqRow.warrantyStartDate || null,
+        endDate: reqRow.warrantyEndDate || null,
+        isActive,
+        daysRemaining,
+        totalDays: hasWarranty ? 7 : 0,
+      },
+      photos: reqRow.completionPhotos || [],
+    });
+  } catch (error) {
+    console.error("Error fetching warranty status:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch warranty status"
+    });
+  }
+};
+
+// ============================================
+// GET COMPLETION PHOTOS (Customer/Mistri)
+// ============================================
+
+export const getCompletionPhotos = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.userId;
+    const id = req.params.id as string;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated"
+      });
+    }
+
+    const existing = await db.select().from(serviceRequests).where(eq(serviceRequests.id, id)).limit(1);
+    if (existing.length === 0) {
+      return res.status(404).json({ success: false, message: "Service request not found" });
+    }
+
+    const reqRow = existing[0];
+
+    // Check authorization
+    const isCustomer = reqRow.customerId === userId;
+    const isMistri = reqRow.assignedMistriId === userId;
+    const isAdmin = (req as any).user?.accountType === 'admin';
+
+    if (!isCustomer && !isMistri && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to view these photos"
+      });
+    }
+
+    if (reqRow.status !== 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: "Photos are only available for completed jobs"
+      });
+    }
+
+    let warrantyInfo = null;
+    if (reqRow.warrantyEndDate) {
+      const endDate = new Date(reqRow.warrantyEndDate);
+      warrantyInfo = {
+        startDate: reqRow.warrantyStartDate,
+        endDate: reqRow.warrantyEndDate,
+        isActive: endDate > new Date(),
+      };
+    }
+
+    return res.status(200).json({
+      success: true,
+      photos: reqRow.completionPhotos || [],
+      warranty: warrantyInfo,
+      note: reqRow.completionNote || null,
+    });
+  } catch (error) {
+    console.error("Error fetching completion photos:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch completion photos"
     });
   }
 };

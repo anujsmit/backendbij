@@ -5,6 +5,7 @@ import {
     registerMistri,
     loginMistri,
     verifyMistriOtp,
+    resendMistriOtp,  // ✅ Import the new function
     mistriForgotPassword,
     verifyMistriForgotOtp,
     resetMistriPassword,
@@ -18,21 +19,20 @@ import { authenticate, requireMistri } from "../../middleware/auth";
 const router = Router();
 
 // ============================================
-// ✅ PUBLIC ROUTES (No authentication required)
+// PUBLIC ROUTES (No authentication)
 // ============================================
-
 router.post("/register", registerMistri);
-router.post("/login", loginMistri);  // ❌ Make sure NO middleware here
+router.post("/login", loginMistri);
 router.post("/otp/verify", verifyMistriOtp);
+router.post("/resend-otp", resendMistriOtp); 
 router.post("/forgot-password", mistriForgotPassword);
 router.post("/verify-forgot-otp", verifyMistriForgotOtp);
 router.post("/reset-password", resetMistriPassword);
 router.post("/refresh-token", refreshMistriToken);
 
 // ============================================
-// ✅ PROTECTED ROUTES (Authentication required)
+// PROTECTED ROUTES
 // ============================================
-
 router.get("/profile", authenticate, requireMistri, getMistriProfile);
 router.post("/logout", authenticate, requireMistri, logoutMistri);
 router.post("/change-password", authenticate, requireMistri, changeMistriPassword);

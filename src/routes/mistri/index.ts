@@ -31,6 +31,10 @@ import {
     getMistriAssignedRequests,
     getServiceRequestById,
     declineServiceRequest,
+    markArrived,
+    completeServiceRequestWithPhotos,
+    getCompletionPhotos,
+    getWarrantyStatus,
 } from "../../controllers/mistri/serviceRequestController";
 
 // Ratings
@@ -136,10 +140,24 @@ router.post("/requests/:id/decline", declineServiceRequest);
 router.post("/requests/:id/start-work", startWork);
 
 /**
+ * POST /api/mistri/requests/:id/arrive
+ * Mark arrival at customer location
+ * Body: { lat?, lng? }
+ */
+router.post("/requests/:id/arrive", markArrived);
+
+/**
  * POST /api/mistri/requests/:id/complete
- * Mark a service request as completed
+ * Mark a service request as completed (legacy - no photos)
  */
 router.post("/requests/:id/complete", completeServiceRequest);
+
+/**
+ * POST /api/mistri/requests/:id/complete-with-photos
+ * Complete job with photos (new flow with warranty)
+ * Body: { photos: string[], note?: string }
+ */
+router.post("/requests/:id/complete-with-photos", completeServiceRequestWithPhotos);
 
 /**
  * POST /api/mistri/requests/:id/toggle-unpaid
@@ -152,6 +170,18 @@ router.post("/requests/:id/toggle-unpaid", toggleUnpaidServiceRequest);
  * Mark a job as paid
  */
 router.post("/requests/:id/mark-paid", markJobAsPaid);
+
+/**
+ * GET /api/mistri/requests/:id/photos
+ * Get completion photos
+ */
+router.get("/requests/:id/photos", getCompletionPhotos);
+
+/**
+ * GET /api/mistri/requests/:id/warranty
+ * Get warranty status
+ */
+router.get("/requests/:id/warranty", getWarrantyStatus);
 
 // ============================================
 // JOB HISTORY & STATISTICS

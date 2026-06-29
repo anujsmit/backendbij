@@ -3,10 +3,10 @@ import { Request, Response } from "express";
 import { db } from "../../db";
 import { 
     ratings, 
-    users,          // ✅ Mistri accounts
+    users,          // ✅ Unified users table
     mistriProfiles 
 } from "../../db/schema";
-import { eq, and, desc, avg } from "drizzle-orm";
+import { eq, and, desc, avg, count, sql } from "drizzle-orm";
 import { createAuditLog } from "../../services/auditLog";
 
 // ============================================
@@ -24,7 +24,6 @@ async function updateMistriAverageRating(mistriId: string) {
             ? parseFloat(avgResult[0].average as string).toFixed(2)
             : "0.00";
 
-        // ✅ Fixed: Use mistriId directly with mistriProfiles.mistriId
         await db.update(mistriProfiles)
             .set({ averageRating })
             .where(eq(mistriProfiles.mistriId, mistriId));
@@ -34,7 +33,7 @@ async function updateMistriAverageRating(mistriId: string) {
 }
 
 // ============================================
-// GET ADMIN RATINGS
+// GET ADMIN RATINGS - FIXED
 // ============================================
 
 export const getAdminRatings = async (req: Request, res: Response) => {
@@ -48,7 +47,7 @@ export const getAdminRatings = async (req: Request, res: Response) => {
 
         const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-        // ✅ Get customer names from users
+        // ✅ Get customer names from users (unified table)
         const rows = await db
             .select({
                 id: ratings.id,
@@ -68,7 +67,7 @@ export const getAdminRatings = async (req: Request, res: Response) => {
             .where(whereClause)
             .orderBy(desc(ratings.createdAt));
 
-        // ✅ Get mistri names from mistriAccounts
+        // ✅ Get mistri names from users (unified table)
         const withMistri = await Promise.all(
             rows.map(async (r) => {
                 const mistri = await db
@@ -104,8 +103,14 @@ export const getAdminRatings = async (req: Request, res: Response) => {
 export const approveRating = async (req: Request, res: Response) => {
     try {
         const id = req.params.id as string;
-        // ✅ Fixed: Use userId from decoded token
         const adminId = (req as any).user?.userId;
+
+        if (!adminId) {
+            return res.status(401).json({
+                success: false,
+                message: "Admin ID not found"
+            });
+        }
 
         const [existing] = await db
             .select()
@@ -140,12 +145,11 @@ export const approveRating = async (req: Request, res: Response) => {
         // ✅ Update average rating using mistriId
         await updateMistriAverageRating(existing.mistriId);
 
-        // ✅ Fixed: Use adminId from token
         await createAuditLog({
             entityType: "rating",
             entityId: id,
             action: "approve",
-            performedBy: adminId || 'system',
+            performedBy: adminId,
             performedByRole: "admin",
             oldValue: { isApproved: false },
             newValue: { isApproved: true, approvedAt: new Date().toISOString() },
@@ -154,6 +158,7 @@ export const approveRating = async (req: Request, res: Response) => {
 
         return res.json({ 
             success: true, 
+            message: "Rating approved successfully",
             rating: updated 
         });
     } catch (error) {
@@ -172,9 +177,15 @@ export const approveRating = async (req: Request, res: Response) => {
 export const rejectRating = async (req: Request, res: Response) => {
     try {
         const id = req.params.id as string;
-        // ✅ Fixed: Use userId from decoded token
         const adminId = (req as any).user?.userId;
         const { reason } = req.body;
+
+        if (!adminId) {
+            return res.status(401).json({
+                success: false,
+                message: "Admin ID not found"
+            });
+        }
 
         const [existing] = await db
             .select()
@@ -189,12 +200,11 @@ export const rejectRating = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Fixed: Use adminId from token
         await createAuditLog({
             entityType: "rating",
             entityId: id,
             action: "reject",
-            performedBy: adminId || 'system',
+            performedBy: adminId,
             performedByRole: "admin",
             oldValue: { 
                 rating: existing.rating, 
@@ -224,7 +234,7 @@ export const rejectRating = async (req: Request, res: Response) => {
 };
 
 // ============================================
-// GET RATING STATISTICS
+// GET RATING STATISTICS - FIXED
 // ============================================
 
 export const getRatingStats = async (req: Request, res: Response) => {
@@ -238,11 +248,10 @@ export const getRatingStats = async (req: Request, res: Response) => {
             });
         }
 
-        // Get average rating
+        // ✅ Get average rating - FIXED: Use proper avg
         const avgResult = await db
             .select({ 
-                average: avg(ratings.rating),
-                count: avg(ratings.rating)
+                average: avg(ratings.rating) 
             })
             .from(ratings)
             .where(and(
@@ -250,11 +259,22 @@ export const getRatingStats = async (req: Request, res: Response) => {
                 eq(ratings.isApproved, true)
             ));
 
-        // Get rating distribution
+        // ✅ Get total count - FIXED: Use count instead of avg
+        const totalResult = await db
+            .select({ 
+                count: sql<number>`count(*)::int` 
+            })
+            .from(ratings)
+            .where(and(
+                eq(ratings.mistriId, mistriId),
+                eq(ratings.isApproved, true)
+            ));
+
+        // ✅ Get rating distribution - FIXED: Use proper group by
         const distribution = await db
             .select({
                 rating: ratings.rating,
-                count: avg(ratings.rating)
+                count: sql<number>`count(*)::int`,
             })
             .from(ratings)
             .where(and(
@@ -264,21 +284,13 @@ export const getRatingStats = async (req: Request, res: Response) => {
             .groupBy(ratings.rating)
             .orderBy(ratings.rating);
 
-        const totalCount = await db
-            .select({ count: avg(ratings.rating) })
-            .from(ratings)
-            .where(and(
-                eq(ratings.mistriId, mistriId),
-                eq(ratings.isApproved, true)
-            ));
-
         return res.json({
             success: true,
             stats: {
                 averageRating: avgResult[0]?.average 
                     ? parseFloat(avgResult[0].average as string) 
                     : 0,
-                totalReviews: totalCount[0]?.count || 0,
+                totalReviews: totalResult[0]?.count || 0,
                 distribution: distribution.map(d => ({
                     rating: d.rating,
                     count: Number(d.count)
@@ -295,7 +307,7 @@ export const getRatingStats = async (req: Request, res: Response) => {
 };
 
 // ============================================
-// GET MISTRI RATINGS (For Customer View)
+// GET MISTRI RATINGS (For Customer View) - FIXED
 // ============================================
 
 export const getMistriRatings = async (req: Request, res: Response) => {
@@ -312,7 +324,7 @@ export const getMistriRatings = async (req: Request, res: Response) => {
             });
         }
 
-        // Get approved ratings for the mistri
+        // ✅ Get approved ratings for the mistri
         const ratingsList = await db
             .select({
                 id: ratings.id,
@@ -332,9 +344,11 @@ export const getMistriRatings = async (req: Request, res: Response) => {
             .limit(limit)
             .offset(offset);
 
-        // Get total count
+        // ✅ Get total count - FIXED: Use sql count
         const totalResult = await db
-            .select({ count: avg(ratings.rating) })
+            .select({ 
+                count: sql<number>`count(*)::int` 
+            })
             .from(ratings)
             .where(and(
                 eq(ratings.mistriId, mistriId),
@@ -348,6 +362,7 @@ export const getMistriRatings = async (req: Request, res: Response) => {
                 page,
                 limit,
                 total: totalResult[0]?.count || 0,
+                totalPages: Math.ceil((totalResult[0]?.count || 0) / limit),
             }
         });
     } catch (error) {
@@ -368,6 +383,13 @@ export const deleteRating = async (req: Request, res: Response) => {
         const id = req.params.id as string;
         const adminId = (req as any).user?.userId;
 
+        if (!adminId) {
+            return res.status(401).json({
+                success: false,
+                message: "Admin ID not found"
+            });
+        }
+
         const [existing] = await db
             .select()
             .from(ratings)
@@ -387,7 +409,7 @@ export const deleteRating = async (req: Request, res: Response) => {
             entityType: "rating",
             entityId: id,
             action: "delete",
-            performedBy: adminId || 'system',
+            performedBy: adminId,
             performedByRole: "admin",
             oldValue: {
                 rating: existing.rating,

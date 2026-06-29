@@ -175,7 +175,6 @@ export const registerUser = async (req: Request, res: Response) => {
         });
     }
 };
-
 // ============================================
 // USER LOGIN (ONLY FOR USER/CUSTOMER)
 // ============================================
@@ -263,6 +262,47 @@ export const loginUser = async (req: Request, res: Response) => {
             });
         }
 
+        // ✅ NEW: Check if user is verified - send OTP if not verified
+        if (!user.isVerified) {
+            // Generate and send OTP
+            const otp = await createOtp(cleanPhone, 10 * 60 * 1000, 'user');
+            
+            if (process.env.NODE_ENV === 'production') {
+                await sendSms(cleanPhone, `SERVEX: Your verification OTP is: ${otp}`, "otp_login");
+            } else {
+                console.log(`[DEV OTP] ${cleanPhone}: ${otp}`);
+            }
+
+            // Record the login attempt with verification required flag
+            // ✅ REMOVED: 'metadata' field that doesn't exist in schema
+            await db.insert(loginAttempts).values({
+                phoneNumber: cleanPhone,
+                accountType: 'user',
+                attemptType: 'user_login',
+                success: true, // Password was correct
+                ipAddress,
+                userAgent: userAgent || null,
+            });
+
+            // Return response indicating verification is required
+            return res.status(403).json({
+                success: false,
+                message: "Please verify your phone number first",
+                isVerified: false,
+                requiresVerification: true,
+                phone: cleanPhone,
+                user: {
+                    id: user.id,
+                    phoneNumber: user.phoneNumber,
+                    fullName: user.fullName,
+                    accountType: user.accountType,
+                    isVerified: false,
+                    isActive: user.isActive,
+                    isOnboarded: user.isOnboarded || false,
+                }
+            });
+        }
+
         // Check if account has scheduled deletion
         const hasScheduledDeletion = user.deletionScheduledAt !== null && 
             new Date(user.deletionScheduledAt) > new Date();
@@ -339,7 +379,70 @@ export const loginUser = async (req: Request, res: Response) => {
         });
     }
 };
+// backend/src/controllers/auth/userAuthController.ts
 
+// ============================================
+// USER RESEND VERIFICATION OTP (During Login)
+// ============================================
+
+export const resendVerificationOtp = async (req: Request, res: Response) => {
+    try {
+        const { phone } = req.body;
+
+        if (!phone) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone number is required"
+            });
+        }
+
+        const cleanPhone = normalizePhone(phone);
+
+        // Check if user exists
+        const user = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'user')
+            )
+        });
+
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found"
+            });
+        }
+
+        // Check if user is already verified
+        if (user.isVerified) {
+            return res.status(400).json({
+                success: false,
+                message: "User is already verified"
+            });
+        }
+
+        // Generate and send OTP
+        const otp = await createOtp(cleanPhone, 10 * 60 * 1000, 'user');
+
+        if (process.env.NODE_ENV === 'production') {
+            await sendSms(cleanPhone, `SERVEX: Your verification OTP is: ${otp}`, "otp_login");
+        } else {
+            logger.info(`[DEV OTP] ${cleanPhone}: ${otp}`);
+        }
+
+        return res.json({
+            success: true,
+            message: "Verification OTP sent successfully",
+            phone: cleanPhone,
+        });
+    } catch (error) {
+        logger.error("Resend verification OTP error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to send OTP"
+        });
+    }
+};
 // ============================================
 // USER OTP VERIFICATION
 // ============================================
@@ -912,7 +1015,6 @@ export const changeUserPassword = async (req: Request, res: Response) => {
         });
     }
 };
-
 // ============================================
 // UPDATE USER PROFILE (Protected)
 // ============================================
@@ -920,7 +1022,7 @@ export const changeUserPassword = async (req: Request, res: Response) => {
 export const updateUserProfile = async (req: Request, res: Response) => {
     try {
         const userId = (req as any).user?.userId;
-        const { fullName, email, defaultLocation, preferences } = req.body;
+        const { fullName, email, defaultLocation, preferences, isOnboarded, avatarUrl } = req.body;
 
         if (!userId) {
             return res.status(401).json({
@@ -943,10 +1045,12 @@ export const updateUserProfile = async (req: Request, res: Response) => {
 
         // Build update data
         const updateData: any = { updatedAt: new Date() };
-        if (fullName) updateData.fullName = fullName.trim();
-        if (email) updateData.email = email.trim();
-        if (defaultLocation) updateData.defaultLocation = defaultLocation;
-        if (preferences) updateData.preferences = preferences;
+        if (fullName !== undefined) updateData.fullName = fullName.trim();
+        if (email !== undefined) updateData.email = email.trim();
+        if (defaultLocation !== undefined) updateData.defaultLocation = defaultLocation;
+        if (preferences !== undefined) updateData.preferences = preferences;
+        if (avatarUrl !== undefined) updateData.avatarUrl = avatarUrl;
+        if (isOnboarded !== undefined) updateData.isOnboarded = isOnboarded; // ✅ Add this
 
         // Update user
         const [updatedUser] = await db.update(users)
@@ -964,7 +1068,7 @@ export const updateUserProfile = async (req: Request, res: Response) => {
                 accountType: updatedUser.accountType,
                 isVerified: updatedUser.isVerified,
                 isActive: updatedUser.isActive,
-                isOnboarded: updatedUser.isOnboarded,
+                isOnboarded: updatedUser.isOnboarded, // ✅ Return this
                 dob: updatedUser.dob,
                 email: updatedUser.email,
                 defaultLocation: updatedUser.defaultLocation,

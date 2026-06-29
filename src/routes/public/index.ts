@@ -32,26 +32,23 @@ router.get("/categories/:id", getPublicCategoryById);
 router.get("/categories/:id/sub-categories/:subId", getPublicSubCategoryById);
 
 // ============================================
-// PUBLIC SERVICES HIERARCHY
+// ✅ PUBLIC SERVICES HIERARCHY - ADD THIS
 // ============================================
 
-// GET /api/public/services-hierarchy - Get complete service hierarchy
-router.get("/services-hierarchy", getServiceHierarchy);
+// GET /api/public/service-hierarchy - Get complete service hierarchy
+// ✅ Note: This endpoint must exist
+router.get("/service-hierarchy", getServiceHierarchy);
 
-// GET /api/public/services-hierarchy/:id - Get category hierarchy by ID
-router.get("/services-hierarchy/:id", getCategoryHierarchy);
+// GET /api/public/service-hierarchy/:id - Get category hierarchy by ID
+router.get("/service-hierarchy/:id", getCategoryHierarchy);
 
-// GET /api/public/services-hierarchy/item/:id - Get service item details
-router.get("/services-hierarchy/item/:id", getServiceItemDetails);
+// GET /api/public/service-hierarchy/item/:id - Get service item details
+router.get("/service-hierarchy/item/:id", getServiceItemDetails);
 
 // ============================================
 // PUBLIC HERO BANNERS
 // ============================================
-
-// GET /api/public/hero-banners - Get all active hero banners
 router.get("/hero-banners", getPublicHeroBanners);
-
-// GET /api/public/hero-banners/type/:adType - Get banners by ad type
 router.get("/hero-banners/type/:adType", getBannersByAdType);
 
 export default router;

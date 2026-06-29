@@ -467,6 +467,71 @@ export const mistriForgotPassword = async (req: Request, res: Response) => {
     }
 };
 
+// backend/src/controllers/auth/mistriAuthController.ts
+
+// Add this function to the file
+
+// ============================================
+// MISTRI RESEND OTP
+// ============================================
+
+export const resendMistriOtp = async (req: Request, res: Response) => {
+    try {
+        const { phone } = req.body;
+
+        if (!phone) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone number is required"
+            });
+        }
+
+        const cleanPhone = normalizePhone(phone);
+
+        // Check if mistri exists
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'mistri')
+            )
+        });
+
+        if (!mistri) {
+            return res.status(404).json({
+                success: false,
+                message: "Mistri account not found"
+            });
+        }
+
+        // Check if mistri is already verified
+        if (mistri.isVerified) {
+            return res.status(400).json({
+                success: false,
+                message: "Account already verified"
+            });
+        }
+
+        // Generate and send OTP
+        const otp = await createOtp(cleanPhone, 10 * 60 * 1000, 'mistri');
+
+        if (process.env.NODE_ENV === 'production') {
+            await sendSms(cleanPhone, `SERVEX: Your verification OTP is: ${otp}`, "otp_login");
+        } else {
+            logger.info(`[DEV OTP] ${cleanPhone}: ${otp}`);
+        }
+
+        return res.json({
+            success: true,
+            message: "OTP sent successfully"
+        });
+    } catch (error) {
+        logger.error("Resend mistri OTP error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to send OTP"
+        });
+    }
+};
 // ============================================
 // MISTRI VERIFY FORGOT OTP
 // ============================================

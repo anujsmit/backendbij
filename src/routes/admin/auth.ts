@@ -27,6 +27,9 @@ const router = Router();
  */
 router.post("/login", adminLogin);
 
+// ✅ ADD THIS ROUTE - alias for /login to match frontend
+router.post("/login-with-password", adminLogin);
+
 /**
  * POST /api/admin/auth/refresh-token
  * Refresh access token
