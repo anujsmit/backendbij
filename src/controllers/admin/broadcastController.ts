@@ -2,9 +2,7 @@
 import { Request, Response } from "express";
 import { db } from "../../db";
 import { 
-    userAccounts,        // ✅ Customer accounts
-    mistriAccounts,      // ✅ Mistri accounts
-    users,               // ✅ Admin users - ADDED THIS IMPORT
+    users,                // ✅ Unified users table (customers, mistris, admins)
     mistriProfiles, 
     notifications, 
     auditLogs 
@@ -40,76 +38,60 @@ export const SEGMENTS: { key: string; label: string; description: string }[] = [
 // ============================================
 
 async function recipientsFor(segment: string): Promise<Recipient[]> {
-    // ✅ Customer columns from userAccounts
-    const customerCols = { 
-        id: userAccounts.id, 
-        deviceToken: userAccounts.deviceToken, 
-        phoneNumber: userAccounts.phoneNumber 
-    };
-    
-    // ✅ Provider columns from mistriAccounts
-    const providerCols = {
-        id: mistriAccounts.id,
-        deviceToken: mistriAccounts.deviceToken,
-        phoneNumber: mistriAccounts.phoneNumber
+    // ✅ Use unified users table with accountType filters
+    const cols = { 
+        id: users.id, 
+        deviceToken: users.deviceToken, 
+        phoneNumber: users.phoneNumber 
     };
 
     switch (segment) {
         case "all_customers":
-            return db.select(customerCols)
-                .from(userAccounts)
+            return db.select(cols)
+                .from(users)
                 .where(and(
-                    eq(userAccounts.accountType, "user"),
-                    eq(userAccounts.isActive, true)
+                    eq(users.accountType, "user"),
+                    eq(users.isActive, true)
                 ));
 
         case "all_providers":
-            return db.select(providerCols)
-                .from(mistriAccounts)
+            return db.select(cols)
+                .from(users)
                 .where(and(
-                    eq(mistriAccounts.accountType, "mistri"),
-                    eq(mistriAccounts.isActive, true)
+                    eq(users.accountType, "mistri"),
+                    eq(users.isActive, true)
                 ));
 
         case "everyone": {
-            const customers = await db.select(customerCols)
-                .from(userAccounts)
+            return db.select(cols)
+                .from(users)
                 .where(and(
-                    eq(userAccounts.accountType, "user"),
-                    eq(userAccounts.isActive, true)
+                    eq(users.isActive, true),
+                    sql`${users.accountType} IN ('user', 'mistri')`
                 ));
-            
-            const providers = await db.select(providerCols)
-                .from(mistriAccounts)
-                .where(and(
-                    eq(mistriAccounts.accountType, "mistri"),
-                    eq(mistriAccounts.isActive, true)
-                ));
-            
-            return [...customers, ...providers];
         }
 
         case "providers_plumber":
         case "providers_electrician": {
             const sid = segment === "providers_plumber" ? 1 : 2;
-            return db.select(providerCols)
-                .from(mistriAccounts)
-                .innerJoin(mistriProfiles, eq(mistriProfiles.mistriId, mistriAccounts.id))
+            return db.select(cols)
+                .from(users)
+                .innerJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
                 .where(and(
-                    eq(mistriAccounts.accountType, "mistri"),
-                    eq(mistriAccounts.isActive, true),
+                    eq(users.accountType, "mistri"),
+                    eq(users.isActive, true),
                     eq(mistriProfiles.serviceId, sid)
                 ));
         }
 
         case "inactive_customers": {
             const since = new Date(Date.now() - 30 * 86_400_000).toISOString();
-            return db.select(customerCols)
-                .from(userAccounts)
+            return db.select(cols)
+                .from(users)
                 .where(and(
-                    eq(userAccounts.accountType, "user"),
-                    eq(userAccounts.isActive, true),
-                    sql`${userAccounts.id} NOT IN (SELECT DISTINCT customer_id FROM service_requests WHERE created_at > ${since}::timestamptz)`
+                    eq(users.accountType, "user"),
+                    eq(users.isActive, true),
+                    sql`${users.id} NOT IN (SELECT DISTINCT customer_id FROM service_requests WHERE created_at > ${since}::timestamptz)`
                 ));
         }
 
@@ -148,28 +130,16 @@ export const getBroadcastSegments = async (_req: Request, res: Response) => {
 };
 
 // ============================================
-// GET ACCOUNT TYPE HELPER
+// GET ACCOUNT TYPE HELPER (Simplified with unified users)
 // ============================================
 
 async function getAccountType(userId: string): Promise<'user' | 'mistri' | 'admin'> {
-    // Check user accounts
-    const user = await db.query.userAccounts.findFirst({
-        where: eq(userAccounts.id, userId)
-    });
-    if (user) return 'user';
-
-    // Check mistri accounts
-    const mistri = await db.query.mistriAccounts.findFirst({
-        where: eq(mistriAccounts.id, userId)
-    });
-    if (mistri) return 'mistri';
-
-    // Check admin users
-    const admin = await db.query.users.findFirst({
+    const user = await db.query.users.findFirst({
         where: eq(users.id, userId)
     });
-    if (admin) return 'admin';
-
+    if (user) {
+        return user.accountType as 'user' | 'mistri' | 'admin';
+    }
     return 'user';
 }
 
@@ -223,7 +193,6 @@ export const sendBroadcast = async (req: Request, res: Response) => {
 
         // In-app notifications
         if (channels.includes("inapp")) {
-            // ✅ FIXED: Resolve accountType for each recipient before inserting
             const notificationsData = [];
             for (const u of recipients) {
                 const accountType = await getAccountType(u.id);
@@ -353,6 +322,10 @@ export const getBroadcastHistory = async (_req: Request, res: Response) => {
 // SEND TO SPECIFIC USERS (Direct broadcast)
 // ============================================
 
+// ============================================
+// SEND TO SPECIFIC USERS (Direct broadcast)
+// ============================================
+
 export const sendDirectBroadcast = async (req: Request, res: Response) => {
     try {
         const { userIds, title, message, channels } = req.body;
@@ -380,24 +353,15 @@ export const sendDirectBroadcast = async (req: Request, res: Response) => {
 
         let pushSent = 0, smsSent = 0, inappSent = 0;
 
-        // Get recipients from both tables
-        const customers = await db.select({
-            id: userAccounts.id,
-            deviceToken: userAccounts.deviceToken,
-            phoneNumber: userAccounts.phoneNumber,
+        // ✅ Get recipients from unified users table with accountType
+        const recipients = await db.select({
+            id: users.id,
+            deviceToken: users.deviceToken,
+            phoneNumber: users.phoneNumber,
+            accountType: users.accountType,  // ✅ Add accountType to the select
         })
-        .from(userAccounts)
-        .where(inArray(userAccounts.id, userIds));
-
-        const mistris = await db.select({
-            id: mistriAccounts.id,
-            deviceToken: mistriAccounts.deviceToken,
-            phoneNumber: mistriAccounts.phoneNumber,
-        })
-        .from(mistriAccounts)
-        .where(inArray(mistriAccounts.id, userIds));
-
-        const recipients = [...customers, ...mistris];
+        .from(users)
+        .where(inArray(users.id, userIds));
 
         if (recipients.length === 0) {
             return res.status(404).json({
@@ -408,10 +372,10 @@ export const sendDirectBroadcast = async (req: Request, res: Response) => {
 
         // In-app notifications
         if (channels?.includes("inapp")) {
-            // ✅ FIXED: Resolve accountType for each recipient before inserting
             const notificationsData = [];
             for (const u of recipients) {
-                const accountType = await getAccountType(u.id);
+                // ✅ accountType is now available
+                const accountType = u.accountType as 'user' | 'mistri' | 'admin';
                 notificationsData.push({
                     userId: u.id,
                     accountType: accountType,

@@ -2,9 +2,7 @@
 import { Request, Response } from "express";
 import { db } from "../../db";
 import {
-    users,                    // ✅ Admin users only
-    userAccounts,             // ✅ Customer accounts
-    mistriAccounts,           // ✅ Mistri accounts
+    users,                    // ✅ Unified users table (customers, mistris, admins)
     mistriProfiles,
     serviceRequests,
     ratings,
@@ -16,7 +14,7 @@ import { eq, and, desc, ilike, or, count, sql, sum, SQL, gte, lte, ne } from "dr
 import { alias } from "drizzle-orm/pg-core";
 import { createAuditLog } from "../../services/auditLog";
 import { sendSms } from "../../services/sms";
-import { createNotification } from "../notificationController";
+import { createNotification } from "../users/notificationController";
 import { shouldSendNotification } from "../../services/notificationPreferences";
 import { stopDispatch } from "../../services/dispatch";
 import { z } from "zod";
@@ -68,9 +66,9 @@ export const getMistriJobs = async (req: Request, res: Response) => {
 export const getAdminStats = async (_req: Request, res: Response) => {
     try {
         const results = await Promise.allSettled([
-            db.select({ count: count() }).from(users),
-            db.select({ count: count() }).from(mistriAccounts),
-            db.select({ count: count() }).from(userAccounts),
+            db.select({ count: count() }).from(users).where(eq(users.accountType, "admin")),  // ✅ Only admins
+            db.select({ count: count() }).from(users).where(eq(users.accountType, "mistri")), // ✅ Only mistris
+            db.select({ count: count() }).from(users).where(eq(users.accountType, "user")),   // ✅ Only customers
             db.select({ count: count() }).from(serviceRequests).where(eq(serviceRequests.status, "pending")),
             db.select({ count: count() }).from(ratings).where(eq(ratings.isApproved, false)),
             db.select({ total: sum(serviceRequests.paymentAmount) })
@@ -138,7 +136,7 @@ export const getUsers = async (req: Request, res: Response) => {
         const limitNum = Math.min(100, parseInt(strParam(req.query.limit) || "20"));
         const offset = (pageNum - 1) * limitNum;
 
-        const conditions: SQL[] = [];
+        const conditions: SQL[] = [eq(users.accountType, "admin")];  // ✅ Only admins
         if (search) {
             conditions.push(
                 or(
@@ -155,7 +153,7 @@ export const getUsers = async (req: Request, res: Response) => {
                 id: users.id,
                 fullName: users.fullName,
                 phoneNumber: users.phoneNumber,
-                role: users.role,
+                accountType: users.accountType,  // ✅ Changed from role to accountType
                 isActive: users.isActive,
                 createdAt: users.createdAt,
             })
@@ -185,7 +183,11 @@ export const getUsers = async (req: Request, res: Response) => {
 export const getUserById = async (req: Request, res: Response) => {
     try {
         const id = req.params.id as string;
-        const [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+        const [user] = await db
+            .select()
+            .from(users)
+            .where(and(eq(users.id, id), eq(users.accountType, "admin")))  // ✅ Only admins
+            .limit(1);
         if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
         return res.json({ success: true, user });
@@ -196,13 +198,17 @@ export const getUserById = async (req: Request, res: Response) => {
 };
 
 // ============================================
-// GET CUSTOMER DETAIL (From userAccounts)
+// GET CUSTOMER DETAIL (From unified users table)
 // ============================================
 
 export const getCustomerDetail = async (req: Request, res: Response) => {
     try {
         const id = req.params.id as string;
-        const [customer] = await db.select().from(userAccounts).where(eq(userAccounts.id, id)).limit(1);
+        const [customer] = await db
+            .select()
+            .from(users)
+            .where(and(eq(users.id, id), eq(users.accountType, "user")))  // ✅ Only customers
+            .limit(1);
         if (!customer) return res.status(404).json({ success: false, message: "Customer not found" });
 
         const orders = await db
@@ -248,7 +254,7 @@ export const getCustomerDetail = async (req: Request, res: Response) => {
         let isFlagged = false;
         let flagNote: string | null = null;
         try {
-            const r = await db.execute(sql`SELECT is_flagged, flag_note FROM user_accounts WHERE id = ${id} LIMIT 1`);
+            const r = await db.execute(sql`SELECT is_flagged, flag_note FROM users WHERE id = ${id} AND account_type = 'user' LIMIT 1`);
             const row = (r as unknown as Array<{ is_flagged: boolean; flag_note: string | null }>)[0];
             isFlagged = !!row?.is_flagged;
             flagNote = row?.flag_note ?? null;
@@ -303,18 +309,22 @@ export const flagUser = async (req: Request, res: Response) => {
         }
         const { isFlagged, flagNote } = parsed.data;
 
-        const [existing] = await db.select().from(userAccounts).where(eq(userAccounts.id, id)).limit(1);
+        const [existing] = await db
+            .select()
+            .from(users)
+            .where(and(eq(users.id, id), eq(users.accountType, "user")))  // ✅ Only customers
+            .limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "Customer not found" });
 
         let warning: string | undefined;
         try {
-            await db.execute(sql`UPDATE user_accounts SET is_flagged = ${isFlagged}, flag_note = ${flagNote ?? null} WHERE id = ${id}`);
+            await db.execute(sql`UPDATE users SET is_flagged = ${isFlagged}, flag_note = ${flagNote ?? null} WHERE id = ${id}`);
         } catch {
             warning = "Flag couldn't be saved — the customer-flag migration hasn't been run yet.";
         }
 
         await createAuditLog({
-            entityType: "user_account",
+            entityType: "user",  // ✅ Changed from user_account to user
             entityId: id,
             action: isFlagged ? "flag" : "unflag",
             performedBy: adminId || 'system',
@@ -346,7 +356,11 @@ export const messageUser = async (req: Request, res: Response) => {
         }
         const { title, message } = parsed.data;
 
-        const [customer] = await db.select().from(userAccounts).where(eq(userAccounts.id, id)).limit(1);
+        const [customer] = await db
+            .select()
+            .from(users)
+            .where(and(eq(users.id, id), eq(users.accountType, "user")))  // ✅ Only customers
+            .limit(1);
         if (!customer) return res.status(404).json({ success: false, message: "Customer not found" });
 
         await createNotification(id, title?.trim() || "Message from ServeX", message, "admin_message");
@@ -373,24 +387,42 @@ export const getGlobalSearch = async (req: Request, res: Response) => {
         }
         const like = `%${q}%`;
 
+        // ✅ Search customers from unified users table
         const customerRows = await db
-            .select({ id: userAccounts.id, fullName: userAccounts.fullName, phoneNumber: userAccounts.phoneNumber, accountType: userAccounts.accountType })
-            .from(userAccounts)
-            .where(or(ilike(userAccounts.fullName, like), ilike(userAccounts.phoneNumber, like)))
-            .orderBy(desc(userAccounts.createdAt))
+            .select({ 
+                id: users.id, 
+                fullName: users.fullName, 
+                phoneNumber: users.phoneNumber, 
+                accountType: users.accountType 
+            })
+            .from(users)
+            .where(and(
+                eq(users.accountType, "user"),
+                or(ilike(users.fullName, like), ilike(users.phoneNumber, like))
+            ))
+            .orderBy(desc(users.createdAt))
             .limit(8);
 
+        // ✅ Search mistris from unified users table
         const mistriRows = await db
-            .select({ id: mistriAccounts.id, fullName: mistriAccounts.fullName, phoneNumber: mistriAccounts.phoneNumber, accountType: mistriAccounts.accountType })
-            .from(mistriAccounts)
-            .where(or(ilike(mistriAccounts.fullName, like), ilike(mistriAccounts.phoneNumber, like)))
-            .orderBy(desc(mistriAccounts.createdAt))
+            .select({ 
+                id: users.id, 
+                fullName: users.fullName, 
+                phoneNumber: users.phoneNumber, 
+                accountType: users.accountType 
+            })
+            .from(users)
+            .where(and(
+                eq(users.accountType, "mistri"),
+                or(ilike(users.fullName, like), ilike(users.phoneNumber, like))
+            ))
+            .orderBy(desc(users.createdAt))
             .limit(8);
 
         const customers = customerRows.slice(0, 6);
         const mistris = mistriRows.slice(0, 6);
 
-        const cust = alias(userAccounts, "search_cust");
+        const cust = alias(users, "search_cust");
         const requests = await db
             .select({
                 id: serviceRequests.id,
@@ -400,7 +432,10 @@ export const getGlobalSearch = async (req: Request, res: Response) => {
                 customerName: cust.fullName,
             })
             .from(serviceRequests)
-            .leftJoin(cust, eq(serviceRequests.customerId, cust.id))
+            .leftJoin(cust, and(
+                eq(serviceRequests.customerId, cust.id),
+                eq(cust.accountType, "user")
+            ))
             .where(or(ilike(serviceRequests.address, like), sql`${serviceRequests.id}::text ilike ${like}`))
             .orderBy(desc(serviceRequests.createdAt))
             .limit(6);
@@ -429,10 +464,18 @@ export const updateUser = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, message: "Invalid data", errors: parsed.error.format() });
         }
 
-        const [existing] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+        const [existing] = await db
+            .select()
+            .from(users)
+            .where(and(eq(users.id, id), eq(users.accountType, "admin")))  // ✅ Only admins
+            .limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "User not found" });
 
-        const [updated] = await db.update(users).set({ ...parsed.data, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+        const [updated] = await db
+            .update(users)
+            .set({ ...parsed.data, updatedAt: new Date() })
+            .where(eq(users.id, id))
+            .returning();
 
         await createAuditLog({
             entityType: "user",
@@ -460,11 +503,19 @@ export const toggleUserActive = async (req: Request, res: Response) => {
         const id = req.params.id as string;
         const adminId = (req as any).user?.userId;
 
-        const [existing] = await db.select().from(users).where(eq(users.id, id)).limit(1);
+        const [existing] = await db
+            .select()
+            .from(users)
+            .where(and(eq(users.id, id), eq(users.accountType, "admin")))  // ✅ Only admins
+            .limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "User not found" });
 
         const newActive = !existing.isActive;
-        const [updated] = await db.update(users).set({ isActive: newActive, updatedAt: new Date() }).where(eq(users.id, id)).returning();
+        const [updated] = await db
+            .update(users)
+            .set({ isActive: newActive, updatedAt: new Date() })
+            .where(eq(users.id, id))
+            .returning();
 
         await createAuditLog({
             entityType: "user",
@@ -490,12 +541,12 @@ export const toggleUserActive = async (req: Request, res: Response) => {
 export const getMistrisCounts = async (req: Request, res: Response) => {
     try {
         const search = strParam(req.query.search);
-        const baseConditions: SQL[] = [eq(mistriAccounts.accountType, "mistri")];
+        const baseConditions: SQL[] = [eq(users.accountType, "mistri")];
         if (search) {
             baseConditions.push(
                 or(
-                    ilike(mistriAccounts.fullName, `%${search}%`),
-                    ilike(mistriAccounts.phoneNumber, `%${search}%`)
+                    ilike(users.fullName, `%${search}%`),
+                    ilike(users.phoneNumber, `%${search}%`)
                 )!
             );
         }
@@ -504,8 +555,8 @@ export const getMistrisCounts = async (req: Request, res: Response) => {
         const countJoined = (extra?: SQL) =>
             db
                 .select({ c: count() })
-                .from(mistriAccounts)
-                .leftJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
+                .from(users)
+                .leftJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
                 .where(extra ? and(baseWhere, extra) : baseWhere);
 
         const [[{ c: all }], [{ c: pending }], [{ c: approved }], [{ c: rejected }]] = await Promise.all([
@@ -536,12 +587,12 @@ export const getMistris = async (req: Request, res: Response) => {
         const limitNum = Math.min(100, parseInt(strParam(req.query.limit) || "20"));
         const offset = (pageNum - 1) * limitNum;
 
-        const conditions: SQL[] = [eq(mistriAccounts.accountType, "mistri")];
+        const conditions: SQL[] = [eq(users.accountType, "mistri")];
         if (search) {
             conditions.push(
                 or(
-                    ilike(mistriAccounts.fullName, `%${search}%`),
-                    ilike(mistriAccounts.phoneNumber, `%${search}%`)
+                    ilike(users.fullName, `%${search}%`),
+                    ilike(users.phoneNumber, `%${search}%`)
                 )!
             );
         }
@@ -555,11 +606,11 @@ export const getMistris = async (req: Request, res: Response) => {
         const listBase = () =>
             db
                 .select({
-                    id: mistriAccounts.id,
-                    fullName: mistriAccounts.fullName,
-                    phoneNumber: mistriAccounts.phoneNumber,
-                    isActive: mistriAccounts.isActive,
-                    createdAt: mistriAccounts.createdAt,
+                    id: users.id,
+                    fullName: users.fullName,
+                    phoneNumber: users.phoneNumber,
+                    isActive: users.isActive,
+                    createdAt: users.createdAt,
                     serviceId: mistriProfiles.serviceId,
                     profilePhotoUrl: mistriProfiles.profilePhotoUrl,
                     isAvailable: mistriProfiles.isAvailable,
@@ -574,16 +625,16 @@ export const getMistris = async (req: Request, res: Response) => {
                     experienceLevel: mistriProfiles.experienceLevel,
                     govtIdType: mistriProfiles.govtIdType,
                 })
-                .from(mistriAccounts)
-                .leftJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
+                .from(users)
+                .leftJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
                 .where(and(...conditions));
 
         const [rows, [{ total }]] = await Promise.all([
-            listBase().orderBy(desc(mistriAccounts.createdAt)).limit(limitNum).offset(offset),
+            listBase().orderBy(desc(users.createdAt)).limit(limitNum).offset(offset),
             db
                 .select({ total: count() })
-                .from(mistriAccounts)
-                .leftJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
+                .from(users)
+                .leftJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
                 .where(and(...conditions)),
         ]);
 
@@ -607,11 +658,19 @@ export const toggleMistriFeatured = async (req: Request, res: Response) => {
         const mistriId = req.params.userId as string;
         const adminId = (req as any).user?.userId;
 
-        const [existing] = await db.select().from(mistriProfiles).where(eq(mistriProfiles.mistriId, mistriId)).limit(1);
+        const [existing] = await db
+            .select()
+            .from(mistriProfiles)
+            .where(eq(mistriProfiles.mistriId, mistriId))
+            .limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "Mistri profile not found" });
 
         const newFeatured = !existing.isFeatured;
-        const [updated] = await db.update(mistriProfiles).set({ isFeatured: newFeatured }).where(eq(mistriProfiles.mistriId, mistriId)).returning();
+        const [updated] = await db
+            .update(mistriProfiles)
+            .set({ isFeatured: newFeatured })
+            .where(eq(mistriProfiles.mistriId, mistriId))
+            .returning();
 
         await createAuditLog({
             entityType: "mistri_profile",
@@ -644,10 +703,18 @@ export const updateMistriService = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, message: "Valid serviceId required" });
         }
 
-        const [existing] = await db.select().from(mistriProfiles).where(eq(mistriProfiles.mistriId, mistriId)).limit(1);
+        const [existing] = await db
+            .select()
+            .from(mistriProfiles)
+            .where(eq(mistriProfiles.mistriId, mistriId))
+            .limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "Mistri profile not found" });
 
-        const [updated] = await db.update(mistriProfiles).set({ serviceId: parseInt(serviceId) }).where(eq(mistriProfiles.mistriId, mistriId)).returning();
+        const [updated] = await db
+            .update(mistriProfiles)
+            .set({ serviceId: parseInt(serviceId) })
+            .where(eq(mistriProfiles.mistriId, mistriId))
+            .returning();
 
         await createAuditLog({
             entityType: "mistri_profile",
@@ -675,10 +742,15 @@ export const approveMistri = async (req: Request, res: Response) => {
         const mistriId = req.params.userId as string;
         const adminId = (req as any).user?.userId;
 
-        const [existing] = await db.select().from(mistriProfiles).where(eq(mistriProfiles.mistriId, mistriId)).limit(1);
+        const [existing] = await db
+            .select()
+            .from(mistriProfiles)
+            .where(eq(mistriProfiles.mistriId, mistriId))
+            .limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "Mistri profile not found" });
 
-        const [updated] = await db.update(mistriProfiles)
+        const [updated] = await db
+            .update(mistriProfiles)
             .set({ approvalStatus: "approved", approvalRejectionReason: null })
             .where(eq(mistriProfiles.mistriId, mistriId))
             .returning();
@@ -693,9 +765,11 @@ export const approveMistri = async (req: Request, res: Response) => {
             newValue: { approvalStatus: "approved" },
         });
 
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.id, mistriId),
+        // ✅ Get mistri from unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(eq(users.id, mistriId), eq(users.accountType, "mistri")),
         });
+        
         if (mistri?.phoneNumber) {
             const first = mistri.fullName?.trim()?.split(/\s+/)[0];
             const greeting = first ? `Hi ${first}, ` : "Hi, ";
@@ -724,10 +798,15 @@ export const rejectMistri = async (req: Request, res: Response) => {
         const adminId = (req as any).user?.userId;
         const { reason } = req.body;
 
-        const [existing] = await db.select().from(mistriProfiles).where(eq(mistriProfiles.mistriId, mistriId)).limit(1);
+        const [existing] = await db
+            .select()
+            .from(mistriProfiles)
+            .where(eq(mistriProfiles.mistriId, mistriId))
+            .limit(1);
         if (!existing) return res.status(404).json({ success: false, message: "Mistri profile not found" });
 
-        const [updated] = await db.update(mistriProfiles)
+        const [updated] = await db
+            .update(mistriProfiles)
             .set({
                 approvalStatus: "rejected",
                 approvalRejectionReason: reason || null,
@@ -783,27 +862,27 @@ export const createMistri = async (req: Request, res: Response) => {
         const v = parsed.data;
         const adminId = (req as any).user?.userId;
 
-        const [svc] = await db.select().from(services).where(eq(services.id, v.serviceId)).limit(1);
+        const [svc] = await db
+            .select()
+            .from(services)
+            .where(eq(services.id, v.serviceId))
+            .limit(1);
         if (!svc) {
             return res.status(400).json({ success: false, message: "Invalid service category" });
         }
 
-        const [existingAdmin] = await db.select().from(users).where(eq(users.phoneNumber, v.phoneNumber)).limit(1);
-        if (existingAdmin) {
-            return res.status(409).json({ success: false, message: "This phone number belongs to an admin account" });
-        }
-
-        const [existingUser] = await db.select().from(userAccounts).where(eq(userAccounts.phoneNumber, v.phoneNumber)).limit(1);
+        // ✅ Check if phone exists in unified users table
+        const [existingUser] = await db
+            .select()
+            .from(users)
+            .where(eq(users.phoneNumber, v.phoneNumber))
+            .limit(1);
+        
         if (existingUser) {
-            return res.status(409).json({ success: false, message: "This phone number is already registered as a customer" });
-        }
-
-        const [existingMistri] = await db.select().from(mistriAccounts).where(eq(mistriAccounts.phoneNumber, v.phoneNumber)).limit(1);
-        if (existingMistri) {
-            const [existingProfile] = await db.select().from(mistriProfiles).where(eq(mistriProfiles.mistriId, existingMistri.id)).limit(1);
-            if (existingProfile) {
-                return res.status(409).json({ success: false, message: "This phone number is already registered as a ServeX provider" });
-            }
+            return res.status(409).json({ 
+                success: false, 
+                message: `This phone number is already registered as a ${existingUser.accountType}` 
+            });
         }
 
         const approvalStatus = v.approvalStatus ?? "approved";
@@ -812,7 +891,8 @@ export const createMistri = async (req: Request, res: Response) => {
         let mistriId = "";
 
         await db.transaction(async (tx) => {
-            const [newMistri] = await tx.insert(mistriAccounts).values({
+            // ✅ Insert into unified users table
+            const [newMistri] = await tx.insert(users).values({
                 phoneNumber: v.phoneNumber,
                 fullName: v.fullName,
                 accountType: "mistri",
@@ -834,9 +914,9 @@ export const createMistri = async (req: Request, res: Response) => {
         });
 
         await createAuditLog({
-            entityType: "mistri_account",
+            entityType: "user",  // ✅ Changed from mistri_account to user
             entityId: mistriId,
-            action: "admin_create",
+            action: "admin_create_mistri",
             performedBy: adminId || 'system',
             performedByRole: "admin",
             newValue: { fullName: v.fullName, phoneNumber: v.phoneNumber, serviceId: v.serviceId, approvalStatus },
@@ -889,23 +969,23 @@ export const createUser = async (req: Request, res: Response) => {
         const v = parsed.data;
         const adminId = (req as any).user?.userId;
 
-        const [existingAdmin] = await db.select().from(users).where(eq(users.phoneNumber, v.phoneNumber)).limit(1);
-        if (existingAdmin) {
-            return res.status(409).json({ success: false, message: "This phone number belongs to an admin account" });
-        }
-
-        const [existingUser] = await db.select().from(userAccounts).where(eq(userAccounts.phoneNumber, v.phoneNumber)).limit(1);
+        // ✅ Check if phone exists in unified users table
+        const [existingUser] = await db
+            .select()
+            .from(users)
+            .where(eq(users.phoneNumber, v.phoneNumber))
+            .limit(1);
+        
         if (existingUser) {
-            return res.status(409).json({ success: false, message: "This phone number is already registered as a customer" });
-        }
-
-        const [existingMistri] = await db.select().from(mistriAccounts).where(eq(mistriAccounts.phoneNumber, v.phoneNumber)).limit(1);
-        if (existingMistri) {
-            return res.status(409).json({ success: false, message: "This phone number is already registered as a mistri" });
+            return res.status(409).json({ 
+                success: false, 
+                message: `This phone number is already registered as a ${existingUser.accountType}` 
+            });
         }
 
         const now = new Date();
-        const [created] = await db.insert(userAccounts).values({
+        // ✅ Insert into unified users table
+        const [created] = await db.insert(users).values({
             phoneNumber: v.phoneNumber,
             fullName: v.fullName,
             accountType: "user",
@@ -915,9 +995,9 @@ export const createUser = async (req: Request, res: Response) => {
         }).returning();
 
         await createAuditLog({
-            entityType: "user_account",
+            entityType: "user",
             entityId: created.id,
-            action: "admin_create",
+            action: "admin_create_user",
             performedBy: adminId || 'system',
             performedByRole: "admin",
             newValue: { fullName: created.fullName, phoneNumber: created.phoneNumber, accountType: "user" },
@@ -946,7 +1026,7 @@ export const getAdminServiceRequests = async (req: Request, res: Response) => {
         const limitNum = Math.min(100, parseInt(strParam(req.query.limit) || "20"));
         const offset = (pageNum - 1) * limitNum;
 
-        const mistriUser = alias(mistriAccounts, "mistri_user");
+        const mistriUser = alias(users, "mistri_user");
 
         const conditions: SQL[] = [];
         if (status && ["pending", "assigned", "canceled", "completed"].includes(status)) {
@@ -959,11 +1039,13 @@ export const getAdminServiceRequests = async (req: Request, res: Response) => {
             conditions.push(eq(serviceRequests.unpaid, true));
         }
         if (search) {
+            // ✅ Search customers from unified users table
+            const customerAlias = alias(users, "customer_search");
             conditions.push(
                 or(
-                    ilike(userAccounts.fullName, `%${search}%`),
+                    ilike(customerAlias.fullName, `%${search}%`),
                     ilike(serviceRequests.address, `%${search}%`),
-                    ilike(userAccounts.phoneNumber, `%${search}%`)
+                    ilike(customerAlias.phoneNumber, `%${search}%`)
                 )!
             );
         }
@@ -986,23 +1068,32 @@ export const getAdminServiceRequests = async (req: Request, res: Response) => {
                 startedWorkAt: serviceRequests.startedWorkAt,
                 completedAt: serviceRequests.completedAt,
                 paidAt: serviceRequests.paidAt,
-                customerName: userAccounts.fullName,
-                customerPhone: userAccounts.phoneNumber,
+                customerName: users.fullName,           // ✅ Changed from userAccounts to users
+                customerPhone: users.phoneNumber,       // ✅ Changed from userAccounts to users
                 customerId: serviceRequests.customerId,
                 assignedMistriId: serviceRequests.assignedMistriId,
                 assignedMistriName: mistriUser.fullName,
                 assignedMistriPhone: mistriUser.phoneNumber,
             })
                 .from(serviceRequests)
-                .innerJoin(userAccounts, eq(serviceRequests.customerId, userAccounts.id))
-                .leftJoin(mistriUser, eq(serviceRequests.assignedMistriId, mistriUser.id))
+                .innerJoin(users, and(
+                    eq(serviceRequests.customerId, users.id),
+                    eq(users.accountType, "user")       // ✅ Only customers
+                ))
+                .leftJoin(mistriUser, and(
+                    eq(serviceRequests.assignedMistriId, mistriUser.id),
+                    eq(mistriUser.accountType, "mistri") // ✅ Only mistris
+                ))
                 .where(whereClause)
                 .orderBy(desc(serviceRequests.createdAt))
                 .limit(limitNum)
                 .offset(offset),
             db.select({ total: count() })
                 .from(serviceRequests)
-                .innerJoin(userAccounts, eq(serviceRequests.customerId, userAccounts.id))
+                .innerJoin(users, and(
+                    eq(serviceRequests.customerId, users.id),
+                    eq(users.accountType, "user")
+                ))
                 .where(whereClause),
         ]);
 
@@ -1053,14 +1144,18 @@ export const getServiceRequestCounts = async (_req: Request, res: Response) => {
 // GET ASSIGNABLE MISTRIS
 // ============================================
 
+// ============================================
+// GET ASSIGNABLE MISTRIS
+// ============================================
+
 export const getAssignableMistris = async (req: Request, res: Response) => {
     try {
         const type = strParam(req.query.type);
         const search = strParam(req.query.search);
 
         const conditions: SQL[] = [
-            eq(mistriAccounts.accountType, "mistri"),
-            eq(mistriAccounts.isActive, true),
+            eq(users.accountType, "mistri"),           // ✅ Changed from mistriAccounts to users
+            eq(users.isActive, true),                  // ✅ Changed from mistriAccounts to users
             eq(mistriProfiles.approvalStatus, "approved"),
         ];
         if (type) {
@@ -1069,17 +1164,17 @@ export const getAssignableMistris = async (req: Request, res: Response) => {
         if (search) {
             conditions.push(
                 or(
-                    ilike(mistriAccounts.fullName, `%${search}%`),
-                    ilike(mistriAccounts.phoneNumber, `%${search}%`)
+                    ilike(users.fullName, `%${search}%`),        // ✅ Changed from mistriAccounts to users
+                    ilike(users.phoneNumber, `%${search}%`)      // ✅ Changed from mistriAccounts to users
                 )!
             );
         }
 
         const rows = await db
             .select({
-                id: mistriAccounts.id,
-                fullName: mistriAccounts.fullName,
-                phoneNumber: mistriAccounts.phoneNumber,
+                id: users.id,                                   // ✅ Changed from mistriAccounts to users
+                fullName: users.fullName,                       // ✅ Changed from mistriAccounts to users
+                phoneNumber: users.phoneNumber,                 // ✅ Changed from mistriAccounts to users
                 serviceName: services.serviceName,
                 profilePhotoUrl: mistriProfiles.profilePhotoUrl,
                 availabilityStatus: mistriProfiles.availabilityStatus,
@@ -1088,8 +1183,8 @@ export const getAssignableMistris = async (req: Request, res: Response) => {
                 jobsCompleted: mistriProfiles.jobsCompleted,
                 experienceLevel: mistriProfiles.experienceLevel,
             })
-            .from(mistriAccounts)
-            .innerJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
+            .from(users)                                        // ✅ Changed from mistriAccounts to users
+            .innerJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
             .innerJoin(services, eq(mistriProfiles.serviceId, services.id))
             .where(and(...conditions))
             .orderBy(desc(mistriProfiles.isAvailable), desc(mistriProfiles.averageRating), desc(mistriProfiles.jobsCompleted))
@@ -1101,6 +1196,9 @@ export const getAssignableMistris = async (req: Request, res: Response) => {
         return res.status(500).json({ success: false, message: "Failed to fetch mistris" });
     }
 };
+// ============================================
+// ASSIGN SERVICE REQUEST (Admin)
+// ============================================
 
 // ============================================
 // ASSIGN SERVICE REQUEST (Admin)
@@ -1129,18 +1227,19 @@ export const assignServiceRequest = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, message: `Cannot assign a ${reqRow.status} request` });
         }
 
+        // ✅ Get mistri from unified users table
         const [mistri] = await db
             .select({
-                id: mistriAccounts.id,
-                fullName: mistriAccounts.fullName,
-                phoneNumber: mistriAccounts.phoneNumber,
+                id: users.id,                                   // ✅ Changed from mistriAccounts to users
+                fullName: users.fullName,                       // ✅ Changed from mistriAccounts to users
+                phoneNumber: users.phoneNumber,                 // ✅ Changed from mistriAccounts to users
                 approvalStatus: mistriProfiles.approvalStatus,
                 serviceName: services.serviceName,
             })
-            .from(mistriAccounts)
-            .innerJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
+            .from(users)                                        // ✅ Changed from mistriAccounts to users
+            .innerJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
             .innerJoin(services, eq(mistriProfiles.serviceId, services.id))
-            .where(and(eq(mistriAccounts.id, mistriId), eq(mistriAccounts.accountType, "mistri")))
+            .where(and(eq(users.id, mistriId), eq(users.accountType, "mistri")))
             .limit(1);
 
         if (!mistri) {
@@ -1208,7 +1307,14 @@ export const assignServiceRequest = async (req: Request, res: Response) => {
             id
         );
 
-        const customer = await db.query.userAccounts.findFirst({ where: eq(userAccounts.id, reqRow.customerId) });
+        // ✅ Get customer from unified users table
+        const customer = await db.query.users.findFirst({
+            where: and(
+                eq(users.id, reqRow.customerId),
+                eq(users.accountType, "user")
+            )
+        });
+        
         const shouldSendSms = await shouldSendNotification(reqRow.customerId, "request_accepted", "sms");
         if (customer?.phoneNumber && shouldSendSms) {
             try {

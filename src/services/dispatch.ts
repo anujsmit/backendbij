@@ -20,11 +20,11 @@ import { db } from "../db";
 import { 
     serviceRequests, 
     mistriProfiles, 
-    mistriAccounts,  // ✅ Changed from users
+    users,      // ✅ Changed from mistriAccounts
     services 
 } from "../db/schema";
 import { and, eq, isNull, gte, sql } from "drizzle-orm";
-import { createNotification } from "../controllers/notificationController";
+import { createNotification } from "../controllers/users/notificationController";
 import { logger } from "../utils/logger";
 
 const OFFER_MS = 60_000;   // 1 minute per mistri
@@ -90,22 +90,22 @@ export async function initiateDispatch(requestId: string): Promise<void> {
             return;
         }
 
-        // ✅ Query mistriAccounts instead of users
+        // ✅ Query unified users table with account_type = 'mistri'
         const rows = await db
             .select({
-                id: mistriAccounts.id,
+                id: users.id,
                 currentLocation: mistriProfiles.currentLocation,
                 isAvailable: mistriProfiles.isAvailable,
                 averageRating: mistriProfiles.averageRating,
                 jobsCompleted: mistriProfiles.jobsCompleted,
             })
-            .from(mistriAccounts)  // ✅ Changed from users
-            .innerJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
+            .from(users)      // ✅ Changed from mistriAccounts
+            .innerJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
             .innerJoin(services, eq(mistriProfiles.serviceId, services.id))
             .where(
                 and(
-                    eq(mistriAccounts.accountType, "mistri"),      // ✅ Changed from users.role
-                    eq(mistriAccounts.isActive, true),             // ✅ Changed from users.isActive
+                    eq(users.accountType, "mistri"),      // ✅ Changed from users.role
+                    eq(users.isActive, true),             // ✅ Changed from users.isActive
                     eq(mistriProfiles.approvalStatus, "approved"),
                     eq(mistriProfiles.isAvailable, true),
                     sql`LOWER(${services.serviceName}) = ${r.type.toLowerCase()}`
@@ -189,9 +189,9 @@ async function advance(requestId: string): Promise<void> {
 
     const mistriId = state.candidateIds[state.index];
     try {
-        // ✅ Get mistri name for notification
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.id, mistriId),
+        // ✅ Get mistri name from unified users table
+        const mistri = await db.query.users.findFirst({
+            where: eq(users.id, mistriId),
         });
 
         await createNotification(
@@ -298,9 +298,12 @@ export async function forceDispatch(requestId: string, mistriId: string): Promis
             return false;
         }
 
-        // Check if mistri is available
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.id, mistriId),
+        // ✅ Check if mistri exists and is available in unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.id, mistriId),
+                eq(users.accountType, "mistri")
+            )
         });
 
         if (!mistri || mistri.accountType !== "mistri") {

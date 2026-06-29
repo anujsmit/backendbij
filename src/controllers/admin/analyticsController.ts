@@ -3,8 +3,7 @@ import { Request, Response } from "express";
 import { db } from "../../db";
 import { 
     serviceRequests, 
-    userAccounts,        // ✅ Changed from users (customers)
-    mistriAccounts,      // ✅ Changed from users (mistris)
+    users,                // ✅ Unified users table (customers, mistris, admins)
     mistriProfiles 
 } from "../../db/schema";
 import { and, gte, lte, eq, count, sql, desc } from "drizzle-orm";
@@ -76,22 +75,22 @@ export const getAnalytics = async (req: Request, res: Response) => {
                 completedPaid: sql<string>`count(*) FILTER (WHERE ${serviceRequests.status} = 'completed' AND ${serviceRequests.paidAt} IS NOT NULL)`,
             }).from(serviceRequests).where(inRange),
 
-            // ✅ New customers from userAccounts
+            // ✅ New customers from unified users table
             db.select({ c: count() })
-                .from(userAccounts)
+                .from(users)
                 .where(and(
-                    eq(userAccounts.accountType, "user"),
-                    gte(userAccounts.createdAt, from),
-                    lte(userAccounts.createdAt, to)
+                    eq(users.accountType, "user"),
+                    gte(users.createdAt, from),
+                    lte(users.createdAt, to)
                 )),
 
-            // ✅ New providers from mistriAccounts
+            // ✅ New providers from unified users table
             db.select({ c: count() })
-                .from(mistriAccounts)
+                .from(users)
                 .where(and(
-                    eq(mistriAccounts.accountType, "mistri"),
-                    gte(mistriAccounts.createdAt, from),
-                    lte(mistriAccounts.createdAt, to)
+                    eq(users.accountType, "mistri"),
+                    gte(users.createdAt, from),
+                    lte(users.createdAt, to)
                 )),
 
             // Repeat customers: of customers active in range, how many are lifetime repeaters (>1 request)
@@ -151,22 +150,25 @@ export const getAnalytics = async (req: Request, res: Response) => {
                 FROM service_requests WHERE created_at BETWEEN ${from.toISOString()}::timestamptz AND ${to.toISOString()}::timestamptz GROUP BY 1
             `),
 
-            // ✅ Top providers using mistriAccounts
+            // ✅ Top providers using unified users table
             db.select({
                 mistriId: serviceRequests.assignedMistriId,
-                name: mistriAccounts.fullName,
+                name: users.fullName,
                 serviceId: mistriProfiles.serviceId,
                 completed: sql<string>`count(*) FILTER (WHERE ${serviceRequests.status} = 'completed')`,
                 revenue: sql<string>`COALESCE(SUM(${serviceRequests.paymentAmount}) FILTER (WHERE ${serviceRequests.status} = 'completed'), 0)`,
                 rating: mistriProfiles.averageRating,
             })
             .from(serviceRequests)
-            .innerJoin(mistriAccounts, eq(mistriAccounts.id, serviceRequests.assignedMistriId))
+            .innerJoin(users, and(
+                eq(users.id, serviceRequests.assignedMistriId),
+                eq(users.accountType, "mistri")
+            ))
             .leftJoin(mistriProfiles, eq(mistriProfiles.mistriId, serviceRequests.assignedMistriId))
             .where(inRange)
             .groupBy(
                 serviceRequests.assignedMistriId, 
-                mistriAccounts.fullName, 
+                users.fullName, 
                 mistriProfiles.serviceId, 
                 mistriProfiles.averageRating
             )
@@ -297,16 +299,16 @@ export const getAnalyticsSummary = async (req: Request, res: Response) => {
                 .from(serviceRequests)
                 .where(eq(serviceRequests.status, "completed")),
             db.select({ count: count() })
-                .from(userAccounts)
+                .from(users)
                 .where(and(
-                    eq(userAccounts.accountType, "user"),
-                    gte(userAccounts.createdAt, from)
+                    eq(users.accountType, "user"),
+                    gte(users.createdAt, from)
                 )),
             db.select({ count: count() })
-                .from(mistriAccounts)
+                .from(users)
                 .where(and(
-                    eq(mistriAccounts.accountType, "mistri"),
-                    gte(mistriAccounts.createdAt, from)
+                    eq(users.accountType, "mistri"),
+                    gte(users.createdAt, from)
                 )),
             db.select({ average: sql<string>`COALESCE(AVG(${mistriProfiles.averageRating}), 0)` })
                 .from(mistriProfiles)
@@ -356,9 +358,12 @@ export const getCustomerAnalytics = async (req: Request, res: Response) => {
             });
         }
 
-        // Get customer from userAccounts
-        const customer = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.id, customerId)
+        // ✅ Get customer from unified users table
+        const customer = await db.query.users.findFirst({
+            where: and(
+                eq(users.id, customerId),
+                eq(users.accountType, "user")
+            )
         });
 
         if (!customer) {
@@ -406,6 +411,7 @@ export const getCustomerAnalytics = async (req: Request, res: Response) => {
                 createdAt: customer.createdAt,
                 isActive: customer.isActive,
                 isVerified: customer.isVerified,
+                accountType: customer.accountType,
             },
             stats: {
                 totalOrders: Number(stats?.total || 0),
@@ -441,9 +447,12 @@ export const getMistriAnalytics = async (req: Request, res: Response) => {
             });
         }
 
-        // Get mistri from mistriAccounts
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.id, mistriId)
+        // ✅ Get mistri from unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.id, mistriId),
+                eq(users.accountType, "mistri")
+            )
         });
 
         if (!mistri) {
@@ -458,7 +467,7 @@ export const getMistriAnalytics = async (req: Request, res: Response) => {
             where: eq(mistriProfiles.mistriId, mistriId)
         });
 
-        // Get job history
+        // Get job history with customer names
         const jobs = await db
             .select({
                 id: serviceRequests.id,
@@ -469,10 +478,13 @@ export const getMistriAnalytics = async (req: Request, res: Response) => {
                 createdAt: serviceRequests.createdAt,
                 assignedAt: serviceRequests.assignedAt,
                 completedAt: serviceRequests.completedAt,
-                customerName: userAccounts.fullName,
+                customerName: users.fullName,
             })
             .from(serviceRequests)
-            .innerJoin(userAccounts, eq(serviceRequests.customerId, userAccounts.id))
+            .innerJoin(users, and(
+                eq(serviceRequests.customerId, users.id),
+                eq(users.accountType, "user")
+            ))
             .where(eq(serviceRequests.assignedMistriId, mistriId))
             .orderBy(desc(serviceRequests.createdAt))
             .limit(50);
@@ -499,6 +511,7 @@ export const getMistriAnalytics = async (req: Request, res: Response) => {
                 createdAt: mistri.createdAt,
                 isActive: mistri.isActive,
                 isVerified: mistri.isVerified,
+                accountType: mistri.accountType,
                 approvalStatus: profile?.approvalStatus || null,
                 isAvailable: profile?.isAvailable || false,
                 averageRating: parseFloat(profile?.averageRating || "0"),

@@ -1,7 +1,7 @@
 // src/controllers/admin/employeeController.ts
 import { Request, Response } from "express";
 import { db } from "../../db";
-import { users, employeeProfiles, userAccounts, mistriAccounts } from "../../db/schema";
+import { users, employeeProfiles } from "../../db/schema";
 import { eq, desc, sql } from "drizzle-orm";
 import { z } from "zod";
 import { createAuditLog } from "../../services/auditLog";
@@ -26,7 +26,9 @@ export const getMe = async (req: Request, res: Response) => {
         const id = (req as any).user?.userId;
         if (!id) return res.status(401).json({ success: false, message: "Not authenticated" });
 
-        const user = await db.query.users.findFirst({ where: eq(users.id, id) });
+        const user = await db.query.users.findFirst({ 
+            where: eq(users.id, id) 
+        });
         
         let profile: typeof employeeProfiles.$inferSelect | undefined;
         try {
@@ -52,6 +54,7 @@ export const getMe = async (req: Request, res: Response) => {
                 id,
                 fullName: user?.fullName ?? "",
                 phoneNumber: user?.phoneNumber ?? "",
+                accountType: user?.accountType ?? "admin",  // ✅ Changed from role to accountType
                 staffRole: profile?.staffRole ?? "super_admin",
                 designation: profile?.designation ?? null,
                 avatarUrl,
@@ -140,6 +143,7 @@ export const getEmployees = async (_req: Request, res: Response) => {
                 phoneNumber: users.phoneNumber,
                 isActive: users.isActive,
                 createdAt: users.createdAt,
+                accountType: users.accountType,           // ✅ Changed from role to accountType
                 staffRole: employeeProfiles.staffRole,
                 permissions: employeeProfiles.permissions,
                 designation: employeeProfiles.designation,
@@ -147,7 +151,7 @@ export const getEmployees = async (_req: Request, res: Response) => {
             })
             .from(users)
             .leftJoin(employeeProfiles, eq(users.id, employeeProfiles.userId))
-            .where(eq(users.role, "admin"))
+            .where(eq(users.accountType, "admin"))        // ✅ Changed from role to accountType
             .orderBy(desc(users.createdAt));
 
         const employees = rows.map((r) => ({
@@ -195,47 +199,47 @@ export const createEmployee = async (req: Request, res: Response) => {
         const cleanPhone = parsed.data.phoneNumber.replace(/\s+/g, "");
         const permissions = resolvePermissions(staffRole, parsed.data.permissions);
 
-        // Check if phone exists in any table
-        const existingAdmin = await db.query.users.findFirst({ where: eq(users.phoneNumber, cleanPhone) });
-        const existingUser = await db.query.userAccounts.findFirst({ where: eq(userAccounts.phoneNumber, cleanPhone) });
-        const existingMistri = await db.query.mistriAccounts.findFirst({ where: eq(mistriAccounts.phoneNumber, cleanPhone) });
+        // ✅ Check if phone exists in unified users table
+        const existingUser = await db.query.users.findFirst({ 
+            where: eq(users.phoneNumber, cleanPhone) 
+        });
 
         let targetUserId: string;
 
-        if (existingAdmin) {
-            const existingProfile = await db.query.employeeProfiles.findFirst({
-                where: eq(employeeProfiles.userId, existingAdmin.id),
-            });
-            if (existingProfile) {
-                return res.status(409).json({ success: false, message: "This person is already an employee." });
+        if (existingUser) {
+            // If user exists but is not an admin, check if they're already an employee
+            if (existingUser.accountType === "admin") {
+                const existingProfile = await db.query.employeeProfiles.findFirst({
+                    where: eq(employeeProfiles.userId, existingUser.id),
+                });
+                if (existingProfile) {
+                    return res.status(409).json({ success: false, message: "This person is already an employee." });
+                }
+                // Update existing admin
+                await db.update(users)
+                    .set({ fullName, isActive: true })
+                    .where(eq(users.id, existingUser.id));
+                targetUserId = existingUser.id;
+            } else {
+                // User exists but is not an admin (customer or mistri)
+                return res.status(409).json({
+                    success: false,
+                    message: `This phone already belongs to a ${existingUser.accountType} account. Please use a different number.`,
+                });
             }
-            await db.update(users)
-                .set({ role: "admin", isActive: true, fullName })
-                .where(eq(users.id, existingAdmin.id));
-            targetUserId = existingAdmin.id;
-        } else if (existingUser) {
-            return res.status(409).json({
-                success: false,
-                message: "This phone already belongs to a customer account. Please use a different number.",
-            });
-        } else if (existingMistri) {
-            return res.status(409).json({
-                success: false,
-                message: "This phone already belongs to a mistri account. Please use a different number.",
-            });
         } else {
-            // ✅ Generate a random password for the new admin
+            // ✅ Create new admin user in unified users table
             const randomPassword = Math.random().toString(36).slice(-8) + "Admin@123";
             const hashedPassword = await bcrypt.hash(randomPassword, SALT_ROUNDS);
 
             const [created] = await db.insert(users).values({
                 phoneNumber: cleanPhone,
                 fullName,
-                role: "admin",
+                accountType: "admin",           // ✅ Changed from role to accountType
                 isActive: true,
                 isOnboarded: true,
                 isVerified: true,
-                passwordHash: hashedPassword, // ✅ Required field
+                passwordHash: hashedPassword,
             }).returning();
             targetUserId = created.id;
         }
@@ -287,8 +291,10 @@ export const updateEmployee = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? "Invalid input" });
         }
 
-        const target = await db.query.users.findFirst({ where: eq(users.id, userId) });
-        if (!target || target.role !== "admin") {
+        const target = await db.query.users.findFirst({ 
+            where: eq(users.id, userId) 
+        });
+        if (!target || target.accountType !== "admin") {        // ✅ Changed from role to accountType
             return res.status(404).json({ success: false, message: "Employee not found" });
         }
 
@@ -351,8 +357,10 @@ export const toggleEmployeeActive = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, message: "You can't change your own status." });
         }
         
-        const target = await db.query.users.findFirst({ where: eq(users.id, userId) });
-        if (!target || target.role !== "admin") {
+        const target = await db.query.users.findFirst({ 
+            where: eq(users.id, userId) 
+        });
+        if (!target || target.accountType !== "admin") {        // ✅ Changed from role to accountType
             return res.status(404).json({ success: false, message: "Employee not found" });
         }
         
@@ -389,8 +397,10 @@ export const removeEmployee = async (req: Request, res: Response) => {
             return res.status(400).json({ success: false, message: "You can't remove yourself." });
         }
         
-        const target = await db.query.users.findFirst({ where: eq(users.id, userId) });
-        if (!target || target.role !== "admin") {
+        const target = await db.query.users.findFirst({ 
+            where: eq(users.id, userId) 
+        });
+        if (!target || target.accountType !== "admin") {        // ✅ Changed from role to accountType
             return res.status(404).json({ success: false, message: "Employee not found" });
         }
 

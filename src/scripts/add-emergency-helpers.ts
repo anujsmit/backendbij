@@ -3,7 +3,7 @@
 import { db } from "../db";
 import { serviceRequests, users, mistriProfiles, services, notifications } from "../db/schema";
 import { eq, and, ne } from "drizzle-orm";
-import { createNotification } from "../controllers/notificationController";
+import { createNotification } from "../controllers/users/notificationController";
 
 /**
  * Haversine formula to calculate distance between two points on Earth

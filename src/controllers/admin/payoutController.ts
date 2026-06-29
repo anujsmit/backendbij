@@ -1,8 +1,7 @@
 import { Request, Response } from "express";
 import { db } from "../../db";
 import { 
-    users,              // Admin users only
-    mistriAccounts,     // ✅ Mistri accounts
+    users,              // ✅ Unified users table (customers, mistris, admins)
     mistriProfiles, 
     serviceRequests, 
     payouts, 
@@ -141,26 +140,29 @@ export const getPayoutProviders = async (_req: Request, res: Response) => {
     try {
         const rate = await getCommissionRate();
 
-        // ✅ Fixed: Use mistriAccounts instead of users
+        // ✅ Use unified users table with accountType: "mistri"
         const rows = await db
             .select({
                 mistriId: serviceRequests.assignedMistriId,
                 jobs: count(),
                 gross: sum(serviceRequests.paymentAmount),
                 lastPaidAt: sql<string>`max(${serviceRequests.paidAt})`,
-                fullName: mistriAccounts.fullName,      // ✅ Changed from users to mistriAccounts
-                phoneNumber: mistriAccounts.phoneNumber, // ✅ Changed from users to mistriAccounts
+                fullName: users.fullName,                    // ✅ Changed from mistriAccounts to users
+                phoneNumber: users.phoneNumber,              // ✅ Changed from mistriAccounts to users
                 serviceId: mistriProfiles.serviceId,
                 profilePhotoUrl: mistriProfiles.profilePhotoUrl,
             })
             .from(serviceRequests)
-            .innerJoin(mistriAccounts, eq(mistriAccounts.id, serviceRequests.assignedMistriId))  // ✅ Changed from users to mistriAccounts
-            .leftJoin(mistriProfiles, eq(mistriProfiles.mistriId, serviceRequests.assignedMistriId))  // ✅ Changed from userId to mistriId
+            .innerJoin(users, and(
+                eq(users.id, serviceRequests.assignedMistriId),
+                eq(users.accountType, "mistri")              // ✅ Only mistris
+            ))
+            .leftJoin(mistriProfiles, eq(mistriProfiles.mistriId, serviceRequests.assignedMistriId))
             .where(and(...eligibleConds()))
             .groupBy(
                 serviceRequests.assignedMistriId,
-                mistriAccounts.fullName,
-                mistriAccounts.phoneNumber,
+                users.fullName,
+                users.phoneNumber,
                 mistriProfiles.serviceId,
                 mistriProfiles.profilePhotoUrl
             )
@@ -204,8 +206,8 @@ export const getPayouts = async (req: Request, res: Response) => {
         if (mistriId) conds.push(eq(payouts.mistriId, mistriId));
         const where = conds.length ? and(...conds) : undefined;
 
-        // ✅ Fixed: Use mistriAccounts alias
-        const mistri = alias(mistriAccounts, "mistri_user");
+        // ✅ Use unified users table alias
+        const mistri = alias(users, "mistri_user");
         const [rows, [agg]] = await Promise.all([
             db.select({
                 id: payouts.id,
@@ -224,7 +226,10 @@ export const getPayouts = async (req: Request, res: Response) => {
                 createdAt: payouts.createdAt,
             })
                 .from(payouts)
-                .leftJoin(mistri, eq(payouts.mistriId, mistri.id))
+                .leftJoin(mistri, and(
+                    eq(payouts.mistriId, mistri.id),
+                    eq(mistri.accountType, "mistri")
+                ))
                 .where(where)
                 .orderBy(desc(payouts.createdAt))
                 .limit(limit)
@@ -253,14 +258,13 @@ export const settleProvider = async (req: Request, res: Response) => {
         }
         const { mistriId, note } = parsed.data;
         const rate = await getCommissionRate();
-        // ✅ Fixed: Use userId from decoded token
         const adminId = (req as any).user?.userId;
 
-        // ✅ Fixed: Use mistriAccounts instead of users
+        // ✅ Use unified users table with accountType: "mistri"
         const [provider] = await db
             .select()
-            .from(mistriAccounts)
-            .where(and(eq(mistriAccounts.id, mistriId), eq(mistriAccounts.accountType, "mistri")))
+            .from(users)
+            .where(and(eq(users.id, mistriId), eq(users.accountType, "mistri")))
             .limit(1);
         
         if (!provider) {

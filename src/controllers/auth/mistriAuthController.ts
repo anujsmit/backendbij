@@ -4,13 +4,10 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { db } from "../../db";
 import { 
-    mistriAccounts,
+    users,
     mistriProfiles, 
     refreshTokens, 
     loginAttempts,
-    userAccounts,
-    otps,
-    users,
 } from "../../db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { createOtp, verifyOtp as verifyOtpService } from "../../services/otp";
@@ -21,19 +18,45 @@ import { createAuditLog } from "../../services/auditLog";
 const SALT_ROUNDS = 12;
 
 // ============================================
+// ✅ FIX: Ensure JWT secrets are defined
+// ============================================
+if (!process.env.JWT_SECRET) {
+    console.warn('⚠️ JWT_SECRET not found in environment. Using development fallback.');
+    process.env.JWT_SECRET = 'servexisaserviceproviderin2026';
+}
+
+if (!process.env.JWT_REFRESH_SECRET) {
+    console.warn('⚠️ JWT_REFRESH_SECRET not found in environment. Using development fallback.');
+    process.env.JWT_REFRESH_SECRET = 'servexisaserviceproviderin2026_refresh';
+}
+
+console.log('🔑 JWT_SECRET is', process.env.JWT_SECRET ? '✅ SET' : '❌ MISSING');
+console.log('🔑 JWT_REFRESH_SECRET is', process.env.JWT_REFRESH_SECRET ? '✅ SET' : '❌ MISSING');
+
+// ============================================
 // HELPER FUNCTIONS
 // ============================================
 
 function generateTokens(mistriId: string, accountType: string) {
+    const secret = process.env.JWT_SECRET;
+    const refreshSecret = process.env.JWT_REFRESH_SECRET;
+    
+    if (!secret || !refreshSecret) {
+        console.error('❌ JWT secrets are missing!');
+        throw new Error('JWT secrets are not configured. Please check your environment variables.');
+    }
+    
+    console.log('🔐 Generating tokens for mistri:', mistriId);
+    
     const accessToken = jwt.sign(
         { userId: mistriId, type: "access", accountType },
-        process.env.JWT_SECRET!,
+        secret,
         { expiresIn: "7d" }
     );
 
     const refreshToken = jwt.sign(
         { userId: mistriId, type: "refresh", accountType },
-        process.env.JWT_REFRESH_SECRET!,
+        refreshSecret,
         { expiresIn: "30d" }
     );
 
@@ -67,65 +90,41 @@ export const registerMistri = async (req: Request, res: Response) => {
         }
 
         const cleanPhone = normalizePhone(phone);
-        if (!/^9[6-8]\d{8}$/.test(cleanPhone)) {
+        if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
             return res.status(400).json({
                 success: false,
                 message: "Invalid phone number format"
             });
         }
 
-        // ✅ Check if mistri already exists
-        const existingMistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.phoneNumber, cleanPhone)
-        });
-
-        if (existingMistri) {
-            return res.status(409).json({
-                success: false,
-                message: "Mistri with this phone number already exists"
-            });
-        }
-
-        // ✅ Check if user already exists (cross-table check)
-        const existingUser = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.phoneNumber, cleanPhone)
+        // Check if user already exists in unified users table
+        const existingUser = await db.query.users.findFirst({
+            where: eq(users.phoneNumber, cleanPhone)
         });
 
         if (existingUser) {
             return res.status(409).json({
                 success: false,
-                message: "This phone number is already registered as a customer"
-            });
-        }
-
-        // ✅ Check if admin exists (cross-table check)
-        const existingAdmin = await db.query.users.findFirst({
-            where: eq(users.phoneNumber, cleanPhone)
-        });
-
-        if (existingAdmin) {
-            return res.status(409).json({
-                success: false,
-                message: "This phone number is already registered as an admin"
+                message: "User with this phone number already exists"
             });
         }
 
         // Hash password
         const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
 
-        // ✅ Create mistri account
-        const [newMistri] = await db.insert(mistriAccounts).values({
+        // Insert into unified users table with account_type = 'mistri'
+        const [newMistri] = await db.insert(users).values({
             phoneNumber: cleanPhone,
             fullName: fullName.trim(),
             passwordHash: hashedPassword,
             accountType: 'mistri',
             isActive: true,
             isVerified: false,
-            dob: dob || null,
             isOnboarded: false,
+            dob: dob || null,
         }).returning();
 
-        // Generate OTP for verification
+        // Generate OTP
         const otp = await createOtp(cleanPhone, 10 * 60 * 1000, 'mistri');
         
         if (process.env.NODE_ENV === 'production') {
@@ -145,7 +144,6 @@ export const registerMistri = async (req: Request, res: Response) => {
             expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         });
 
-        // Create audit log
         await createAuditLog({
             entityType: "mistri_account",
             entityId: newMistri.id,
@@ -220,9 +218,12 @@ export const loginMistri = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Find mistri account
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.phoneNumber, cleanPhone)
+        // Find mistri in unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'mistri')
+            )
         });
 
         if (!mistri || !mistri.passwordHash) {
@@ -237,22 +238,6 @@ export const loginMistri = async (req: Request, res: Response) => {
             return res.status(401).json({
                 success: false,
                 message: "Invalid credentials"
-            });
-        }
-
-        // ✅ Only allow mistri users
-        if (mistri.accountType !== 'mistri') {
-            await db.insert(loginAttempts).values({
-                phoneNumber: cleanPhone,
-                accountType: 'mistri',
-                attemptType: 'mistri_login',
-                success: false,
-                ipAddress,
-                userAgent: userAgent || null,
-            });
-            return res.status(403).json({
-                success: false,
-                message: "Access denied. This login is for mistri users only."
             });
         }
 
@@ -273,17 +258,12 @@ export const loginMistri = async (req: Request, res: Response) => {
             });
         }
 
-        // Check if account is active
         if (!mistri.isActive) {
             return res.status(403).json({
                 success: false,
                 message: "Account is deactivated. Contact support."
             });
         }
-
-        // Check if account has scheduled deletion
-        const hasScheduledDeletion = mistri.deletionScheduledAt !== null && 
-            new Date(mistri.deletionScheduledAt) > new Date();
 
         // Record successful login
         await db.insert(loginAttempts).values({
@@ -296,26 +276,21 @@ export const loginMistri = async (req: Request, res: Response) => {
         });
 
         // Update last login
-        await db.update(mistriAccounts)
+        await db.update(users)
             .set({ lastLoginAt: new Date() })
-            .where(eq(mistriAccounts.id, mistri.id));
+            .where(eq(users.id, mistri.id));
 
-        // ✅ Get mistri profile
-        let approvalStatus = null;
-        let hasMistriProfile = false;
-        let approvalRejectionReason = null;
-        
+        // Get mistri profile if exists
         const profile = await db.query.mistriProfiles.findFirst({
             where: eq(mistriProfiles.mistriId, mistri.id)
         });
-        hasMistriProfile = !!profile;
-        approvalStatus = profile?.approvalStatus || null;
-        approvalRejectionReason = profile?.approvalRejectionReason || null;
+        const hasMistriProfile = !!profile;
+        const approvalStatus = profile?.approvalStatus || null;
+        const approvalRejectionReason = profile?.approvalRejectionReason || null;
 
         // Generate tokens
         const { accessToken, refreshToken } = generateTokens(mistri.id, "mistri");
 
-        // Store refresh token
         await db.insert(refreshTokens).values({
             token: refreshToken,
             userId: mistri.id,
@@ -323,7 +298,6 @@ export const loginMistri = async (req: Request, res: Response) => {
             expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
         });
 
-        // Create audit log
         await createAuditLog({
             entityType: "mistri_account",
             entityId: mistri.id,
@@ -333,32 +307,29 @@ export const loginMistri = async (req: Request, res: Response) => {
             metadata: { ip: ipAddress }
         });
 
-        // Build response
-        const userResponse = {
-            id: mistri.id,
-            phoneNumber: mistri.phoneNumber,
-            fullName: mistri.fullName,
-            accountType: mistri.accountType,
-            isVerified: mistri.isVerified || false,
-            isActive: mistri.isActive,
-            isOnboarded: mistri.isOnboarded || false,
-            hasMistriProfile: hasMistriProfile,
-            approvalStatus: approvalStatus,
-            approvalRejectionReason: approvalRejectionReason,
-            dob: mistri.dob,
-            deletionScheduledAt: mistri.deletionScheduledAt,
-            hasScheduledDeletion: hasScheduledDeletion,
-        };
-
-        logger.info(`✅ Mistri login successful: ${cleanPhone}`);
+        const hasScheduledDeletion = mistri.deletionScheduledAt !== null && 
+            new Date(mistri.deletionScheduledAt) > new Date();
 
         return res.json({
             success: true,
             message: "Mistri login successful",
             accessToken,
             refreshToken,
-            user: userResponse,
-            requiresDeletionAction: hasScheduledDeletion,
+            user: {
+                id: mistri.id,
+                phoneNumber: mistri.phoneNumber,
+                fullName: mistri.fullName,
+                accountType: mistri.accountType,
+                isVerified: mistri.isVerified || false,
+                isActive: mistri.isActive,
+                isOnboarded: mistri.isOnboarded || false,
+                hasMistriProfile: hasMistriProfile,
+                approvalStatus: approvalStatus,
+                approvalRejectionReason: approvalRejectionReason,
+                dob: mistri.dob,
+                deletionScheduledAt: mistri.deletionScheduledAt,
+                hasScheduledDeletion: hasScheduledDeletion,
+            }
         });
     } catch (error) {
         logger.error("Mistri login error:", error);
@@ -386,12 +357,14 @@ export const verifyMistriOtp = async (req: Request, res: Response) => {
 
         const cleanPhone = normalizePhone(phone);
         
-        // ✅ Verify OTP
         await verifyOtpService(cleanPhone, otp, 'mistri');
 
-        // ✅ Find mistri account
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.phoneNumber, cleanPhone)
+        // Find mistri in unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'mistri')
+            )
         });
 
         if (!mistri) {
@@ -401,23 +374,13 @@ export const verifyMistriOtp = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Only allow mistri users
-        if (mistri.accountType !== 'mistri') {
-            return res.status(403).json({
-                success: false,
-                message: "Access denied. This endpoint is for mistri users only."
-            });
-        }
-
-        // ✅ Update mistri as verified
-        await db.update(mistriAccounts)
+        // Update mistri as verified
+        await db.update(users)
             .set({ isVerified: true })
-            .where(eq(mistriAccounts.id, mistri.id));
+            .where(eq(users.id, mistri.id));
 
-        // ✅ Generate token
         const { accessToken } = generateTokens(mistri.id, "mistri");
 
-        // ✅ Create audit log
         await createAuditLog({
             entityType: "mistri_account",
             entityId: mistri.id,
@@ -468,9 +431,12 @@ export const mistriForgotPassword = async (req: Request, res: Response) => {
 
         const cleanPhone = normalizePhone(phone);
 
-        // ✅ Check if mistri exists
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.phoneNumber, cleanPhone)
+        // Find mistri in unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'mistri')
+            )
         });
 
         if (!mistri) {
@@ -480,14 +446,6 @@ export const mistriForgotPassword = async (req: Request, res: Response) => {
             });
         }
 
-        if (mistri.accountType !== 'mistri') {
-            return res.status(403).json({
-                success: false,
-                message: "Access denied. Password reset is only for mistri users."
-            });
-        }
-
-        // ✅ Generate OTP
         const otp = await createOtp(cleanPhone, 10 * 60 * 1000, 'mistri');
 
         if (process.env.NODE_ENV === 'production') {
@@ -526,22 +484,23 @@ export const verifyMistriForgotOtp = async (req: Request, res: Response) => {
 
         const cleanPhone = normalizePhone(phone);
 
-        // ✅ Verify mistri exists
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.phoneNumber, cleanPhone)
+        // Find mistri in unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'mistri')
+            )
         });
 
-        if (!mistri || mistri.accountType !== 'mistri') {
+        if (!mistri) {
             return res.status(403).json({
                 success: false,
                 message: "Access denied. Only mistri users can reset passwords."
             });
         }
 
-        // ✅ Verify OTP
         await verifyOtpService(cleanPhone, otp, 'mistri');
 
-        // ✅ Generate reset token
         const resetToken = jwt.sign(
             { userId: mistri.id, type: 'reset', accountType: 'mistri' },
             process.env.JWT_SECRET!,
@@ -584,7 +543,6 @@ export const resetMistriPassword = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Verify token
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
             userId: string;
             type: string;
@@ -600,30 +558,31 @@ export const resetMistriPassword = async (req: Request, res: Response) => {
 
         const cleanPhone = normalizePhone(phone);
 
-        // ✅ Verify mistri exists
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.phoneNumber, cleanPhone)
+        // Find mistri in unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'mistri')
+            )
         });
 
-        if (!mistri || mistri.accountType !== 'mistri') {
+        if (!mistri) {
             return res.status(403).json({
                 success: false,
                 message: "Access denied. Only mistri users can reset passwords."
             });
         }
 
-        // ✅ Hash new password
         const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
 
-        // ✅ Update password
-        await db.update(mistriAccounts)
+        // Update password in unified users table
+        await db.update(users)
             .set({ passwordHash: hashedPassword })
-            .where(eq(mistriAccounts.id, mistri.id));
+            .where(eq(users.id, mistri.id));
 
-        // ✅ Invalidate all refresh tokens
+        // Invalidate all refresh tokens
         await db.delete(refreshTokens).where(eq(refreshTokens.userId, mistri.id));
 
-        // ✅ Create audit log
         await createAuditLog({
             entityType: "mistri_account",
             entityId: mistri.id,
@@ -685,7 +644,6 @@ export const refreshMistriToken = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Verify refresh token
         const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as {
             userId: string;
             type: string;
@@ -699,7 +657,6 @@ export const refreshMistriToken = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Check if token exists in database
         const storedToken = await db.query.refreshTokens.findFirst({
             where: and(
                 eq(refreshTokens.token, refreshToken),
@@ -714,7 +671,6 @@ export const refreshMistriToken = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Check if token is expired
         if (new Date(storedToken.expiresAt) < new Date()) {
             await db.delete(refreshTokens).where(eq(refreshTokens.token, refreshToken));
             return res.status(403).json({
@@ -723,13 +679,10 @@ export const refreshMistriToken = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Generate new tokens
         const { accessToken, refreshToken: newRefreshToken } = generateTokens(decoded.userId, "mistri");
 
-        // ✅ Delete old refresh token
         await db.delete(refreshTokens).where(eq(refreshTokens.token, refreshToken));
 
-        // ✅ Store new refresh token
         await db.insert(refreshTokens).values({
             token: newRefreshToken,
             userId: decoded.userId,
@@ -766,9 +719,12 @@ export const getMistriProfile = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Find mistri account
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.id, userId)
+        // Find mistri in unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.id, userId),
+                eq(users.accountType, 'mistri')
+            )
         });
 
         if (!mistri) {
@@ -778,24 +734,13 @@ export const getMistriProfile = async (req: Request, res: Response) => {
             });
         }
 
-        if (mistri.accountType !== 'mistri') {
-            return res.status(403).json({
-                success: false,
-                message: "Access denied. Only mistri users can access this endpoint."
-            });
-        }
-
-        // ✅ Get mistri profile
-        let approvalStatus = null;
-        let hasMistriProfile = false;
-        let approvalRejectionReason = null;
-        
+        // Get mistri profile if exists
         const profile = await db.query.mistriProfiles.findFirst({
             where: eq(mistriProfiles.mistriId, userId)
         });
-        hasMistriProfile = !!profile;
-        approvalStatus = profile?.approvalStatus || null;
-        approvalRejectionReason = profile?.approvalRejectionReason || null;
+        const hasMistriProfile = !!profile;
+        const approvalStatus = profile?.approvalStatus || null;
+        const approvalRejectionReason = profile?.approvalRejectionReason || null;
 
         return res.json({
             success: true,
@@ -854,9 +799,12 @@ export const changeMistriPassword = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Find mistri account
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.id, userId)
+        // Find mistri in unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.id, userId),
+                eq(users.accountType, 'mistri')
+            )
         });
 
         if (!mistri || !mistri.passwordHash) {
@@ -866,7 +814,6 @@ export const changeMistriPassword = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Verify current password
         const isValid = await bcrypt.compare(currentPassword, mistri.passwordHash);
         if (!isValid) {
             return res.status(401).json({
@@ -875,13 +822,11 @@ export const changeMistriPassword = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Hash new password
         const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
-        await db.update(mistriAccounts)
+        await db.update(users)
             .set({ passwordHash: hashedPassword })
-            .where(eq(mistriAccounts.id, userId));
+            .where(eq(users.id, userId));
 
-        // ✅ Create audit log
         await createAuditLog({
             entityType: "mistri_account",
             entityId: userId,

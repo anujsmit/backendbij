@@ -2,9 +2,7 @@
 import { Request, Response } from "express";
 import { db } from "../../db";
 import { 
-    users,              // Admin users only
-    userAccounts,       // Customer accounts
-    mistriAccounts,     // Mistri accounts ✅
+    users,              // ✅ Unified users table (customers, mistris, admins)
     mistriProfiles, 
     services, 
     serviceRequests 
@@ -122,7 +120,6 @@ async function uploadGovtIdImage(
 
 export const createMistriProfile = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         
         logger.info('Create Mistri Profile - User ID:', userId);
@@ -134,9 +131,12 @@ export const createMistriProfile = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ FIXED: Check if user exists in mistriAccounts (they should be a mistri)
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.id, userId),
+        // ✅ Check if user exists and is a mistri in unified users table
+        const mistri = await db.query.users.findFirst({
+            where: and(
+                eq(users.id, userId),
+                eq(users.accountType, "mistri")
+            ),
         });
 
         if (!mistri) {
@@ -185,7 +185,7 @@ export const createMistriProfile = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ FIXED: Check if mistri profile already exists using mistriId
+        // Check if mistri profile already exists
         const existingProfile = await db.query.mistriProfiles.findFirst({
             where: eq(mistriProfiles.mistriId, userId),
         });
@@ -241,10 +241,10 @@ export const createMistriProfile = async (req: Request, res: Response) => {
             govtIdBackUrl = `https://placehold.co/1200x800/FF9800/FFFFFF?text=Govt+ID+Back`;
         }
 
-        // ✅ FIXED: Create mistri profile using mistriId
+        // Create mistri profile
         const result = await db.transaction(async (tx) => {
             const [newProfile] = await tx.insert(mistriProfiles).values({
-                mistriId: userId,  // ✅ Changed from userId to mistriId
+                mistriId: userId,
                 serviceId: Number(serviceId),
                 profilePhotoUrl,
                 currentLocation,
@@ -258,15 +258,14 @@ export const createMistriProfile = async (req: Request, res: Response) => {
                 availabilityStatus: "available",
             }).returning();
 
-            // ✅ FIXED: Update mistri account
-            const [updatedMistri] = await tx.update(mistriAccounts)
+            // ✅ Update user in unified users table
+            const [updatedMistri] = await tx.update(users)
                 .set({ 
                     fullName, 
                     isOnboarded: true, 
                     onboardingCompletedAt: new Date(),
-                    roleSelectedAt: new Date(),
                 })
-                .where(eq(mistriAccounts.id, userId))
+                .where(eq(users.id, userId))
                 .returning();
 
             return { profile: newProfile, mistri: updatedMistri };
@@ -293,7 +292,6 @@ export const createMistriProfile = async (req: Request, res: Response) => {
 
 export const getNearbyMistris = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
 
         if (!userId) {
@@ -312,11 +310,11 @@ export const getNearbyMistris = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ FIXED: Use mistriAccounts instead of users
+        // ✅ Use unified users table with accountType: "mistri"
         const availableMistris = await db
             .select({
-                id: mistriAccounts.id,
-                fullName: mistriAccounts.fullName,
+                id: users.id,
+                fullName: users.fullName,
                 currentLocation: mistriProfiles.currentLocation,
                 serviceId: mistriProfiles.serviceId,
                 profilePhotoUrl: mistriProfiles.profilePhotoUrl,
@@ -327,7 +325,10 @@ export const getNearbyMistris = async (req: Request, res: Response) => {
                 serviceMapIconColor: services.mapIconColor,
             })
             .from(mistriProfiles)
-            .innerJoin(mistriAccounts, eq(mistriProfiles.mistriId, mistriAccounts.id))  // ✅ Changed from userId to mistriId
+            .innerJoin(users, and(
+                eq(mistriProfiles.mistriId, users.id),
+                eq(users.accountType, "mistri")
+            ))
             .innerJoin(services, eq(mistriProfiles.serviceId, services.id))
             .where(eq(mistriProfiles.isAvailable, true));
 
@@ -390,7 +391,6 @@ export const getNearbyMistris = async (req: Request, res: Response) => {
 
 export const getTargetedRequests = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         const accountType = (req as any).user?.accountType;
 
@@ -408,7 +408,7 @@ export const getTargetedRequests = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ FIXED: Use userAccounts for customer names
+        // ✅ Use unified users table for customer names
         const targetedRequests = await db
             .select({
                 id: serviceRequests.id,
@@ -418,11 +418,14 @@ export const getTargetedRequests = async (req: Request, res: Response) => {
                 address: serviceRequests.address,
                 status: serviceRequests.status,
                 createdAt: serviceRequests.createdAt,
-                customerName: userAccounts.fullName,
-                customerId: userAccounts.id,
+                customerName: users.fullName,
+                customerId: users.id,
             })
             .from(serviceRequests)
-            .innerJoin(userAccounts, eq(serviceRequests.customerId, userAccounts.id))
+            .innerJoin(users, and(
+                eq(serviceRequests.customerId, users.id),
+                eq(users.accountType, "user")
+            ))
             .where(
                 and(
                     eq(serviceRequests.assignedMistriId, userId),
@@ -450,7 +453,6 @@ export const getTargetedRequests = async (req: Request, res: Response) => {
 
 export const getMistriProfile = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         const accountType = (req as any).user?.accountType;
 
@@ -468,12 +470,12 @@ export const getMistriProfile = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ FIXED: Use mistriAccounts and mistriId
+        // ✅ Use unified users table
         const profile = await db
             .select({
                 mistriId: mistriProfiles.mistriId,
-                fullName: mistriAccounts.fullName,
-                phoneNumber: mistriAccounts.phoneNumber,
+                fullName: users.fullName,
+                phoneNumber: users.phoneNumber,
                 serviceId: mistriProfiles.serviceId,
                 serviceName: services.serviceName,
                 mapIconColor: services.mapIconColor,
@@ -487,7 +489,10 @@ export const getMistriProfile = async (req: Request, res: Response) => {
                 approvalStatus: mistriProfiles.approvalStatus,
             })
             .from(mistriProfiles)
-            .innerJoin(mistriAccounts, eq(mistriProfiles.mistriId, mistriAccounts.id))
+            .innerJoin(users, and(
+                eq(mistriProfiles.mistriId, users.id),
+                eq(users.accountType, "mistri")
+            ))
             .innerJoin(services, eq(mistriProfiles.serviceId, services.id))
             .where(eq(mistriProfiles.mistriId, userId))
             .limit(1);
@@ -518,7 +523,6 @@ export const getMistriProfile = async (req: Request, res: Response) => {
 
 export const getAcceptedJobs = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         const accountType = (req as any).user?.accountType;
 
@@ -536,7 +540,7 @@ export const getAcceptedJobs = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ FIXED: Use userAccounts for customer names
+        // ✅ Use unified users table for customer names
         const acceptedJobs = await db
             .select({
                 id: serviceRequests.id,
@@ -549,11 +553,14 @@ export const getAcceptedJobs = async (req: Request, res: Response) => {
                 assignedAt: serviceRequests.assignedAt,
                 completedAt: serviceRequests.completedAt,
                 unpaid: serviceRequests.unpaid,
-                customerName: userAccounts.fullName,
-                customerId: userAccounts.id,
+                customerName: users.fullName,
+                customerId: users.id,
             })
             .from(serviceRequests)
-            .innerJoin(userAccounts, eq(serviceRequests.customerId, userAccounts.id))
+            .innerJoin(users, and(
+                eq(serviceRequests.customerId, users.id),
+                eq(users.accountType, "user")
+            ))
             .where(
                 and(
                     eq(serviceRequests.assignedMistriId, userId),
@@ -582,7 +589,6 @@ export const getAcceptedJobs = async (req: Request, res: Response) => {
 
 export const updateMistriProfile = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         const accountType = (req as any).user?.accountType;
 
@@ -603,7 +609,7 @@ export const updateMistriProfile = async (req: Request, res: Response) => {
         const { serviceId, profilePhotoBase64, currentLocation, fullName, bio, isAvailable, availabilityStatus } = req.body;
 
         const mistriProfileUpdates: any = {};
-        const mistriAccountUpdates: any = {};
+        const userUpdates: any = {};
 
         if (serviceId !== undefined) {
             const validServiceIds = [1, 2];
@@ -653,28 +659,29 @@ export const updateMistriProfile = async (req: Request, res: Response) => {
         }
 
         if (fullName !== undefined) {
-            mistriAccountUpdates.fullName = fullName;
+            userUpdates.fullName = fullName;
         }
 
-        // ✅ FIXED: Use mistriId in the where clause
+        // ✅ Update mistri profile
         if (Object.keys(mistriProfileUpdates).length > 0) {
             await db.update(mistriProfiles)
                 .set(mistriProfileUpdates)
                 .where(eq(mistriProfiles.mistriId, userId));
         }
 
-        if (Object.keys(mistriAccountUpdates).length > 0) {
-            await db.update(mistriAccounts)
-                .set(mistriAccountUpdates)
-                .where(eq(mistriAccounts.id, userId));
+        // ✅ Update unified users table
+        if (Object.keys(userUpdates).length > 0) {
+            await db.update(users)
+                .set(userUpdates)
+                .where(eq(users.id, userId));
         }
 
-        // ✅ FIXED: Use mistriAccounts for the updated profile
+        // ✅ Get updated profile from unified users table
         const updatedProfile = await db
             .select({
                 mistriId: mistriProfiles.mistriId,
-                fullName: mistriAccounts.fullName,
-                phoneNumber: mistriAccounts.phoneNumber,
+                fullName: users.fullName,
+                phoneNumber: users.phoneNumber,
                 serviceId: mistriProfiles.serviceId,
                 serviceName: services.serviceName,
                 mapIconColor: services.mapIconColor,
@@ -687,7 +694,10 @@ export const updateMistriProfile = async (req: Request, res: Response) => {
                 jobsCompleted: mistriProfiles.jobsCompleted,
             })
             .from(mistriProfiles)
-            .innerJoin(mistriAccounts, eq(mistriProfiles.mistriId, mistriAccounts.id))
+            .innerJoin(users, and(
+                eq(mistriProfiles.mistriId, users.id),
+                eq(users.accountType, "mistri")
+            ))
             .innerJoin(services, eq(mistriProfiles.serviceId, services.id))
             .where(eq(mistriProfiles.mistriId, userId))
             .limit(1);

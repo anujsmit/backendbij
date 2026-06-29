@@ -1,11 +1,7 @@
 // backend/src/middleware/auth.ts
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { 
-    users, 
-    userAccounts, 
-    mistriAccounts 
-} from "../db/schema";
+import { users } from "../db/schema";
 import { db } from "../db";
 import { eq } from "drizzle-orm";
 import { logger } from "../utils/logger";
@@ -31,23 +27,18 @@ declare global {
 // HELPER FUNCTIONS
 // ============================================
 
-async function findUserById(id: string, accountType: string) {
-    if (accountType === 'admin') {
-        return await db.query.users.findFirst({
-            where: eq(users.id, id),
-        });
-    } else if (accountType === 'mistri') {
-        return await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.id, id),
-        });
-    } else if (accountType === 'user') {
-        return await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.id, id),
-        });
-    }
-    return null;
+/**
+ * Find a user by ID in the unified users table
+ */
+async function findUserById(id: string) {
+    return await db.query.users.findFirst({
+        where: eq(users.id, id),
+    });
 }
 
+/**
+ * Extract JWT token from request
+ */
 function extractToken(req: Request): string | null {
     // Check Authorization header first
     const authHeader = req.headers.authorization;
@@ -64,6 +55,23 @@ function extractToken(req: Request): string | null {
         ?.split("=")[1];
 
     return cookieToken || null;
+}
+
+/**
+ * Verify JWT token and return decoded payload
+ */
+function verifyToken(token: string): { userId: string; type: string; accountType: string } {
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+        logger.error("JWT_SECRET not defined in environment variables");
+        throw new Error("JWT_SECRET not configured");
+    }
+
+    return jwt.verify(token, secret) as {
+        userId: string;
+        type: string;
+        accountType: string;
+    };
 }
 
 // ============================================
@@ -85,29 +93,24 @@ export const authenticate = async (
             });
         }
 
-        const secret = process.env.JWT_SECRET;
-        if (!secret) {
-            logger.error("JWT_SECRET not defined in environment variables");
-            return res.status(500).json({
-                success: false,
-                message: "Internal server error",
-            });
-        }
-
         // Verify token
-        const decoded = jwt.verify(token, secret) as {
-            userId: string;
-            type: string;
-            accountType: string;
-        };
+        const decoded = verifyToken(token);
 
-        // Find user in the appropriate table
-        const user = await findUserById(decoded.userId, decoded.accountType);
+        // Find user in unified users table
+        const user = await findUserById(decoded.userId);
 
         if (!user) {
             return res.status(401).json({
                 success: false,
                 message: "User not found",
+            });
+        }
+
+        // Verify account type matches
+        if (user.accountType !== decoded.accountType) {
+            return res.status(401).json({
+                success: false,
+                message: "Invalid account type",
             });
         }
 
@@ -165,20 +168,7 @@ export const authenticateAdmin = async (
             });
         }
 
-        const secret = process.env.JWT_SECRET;
-        if (!secret) {
-            logger.error("JWT_SECRET not defined in environment variables");
-            return res.status(500).json({
-                success: false,
-                message: "Internal server error",
-            });
-        }
-
-        const decoded = jwt.verify(token, secret) as {
-            userId: string;
-            type: string;
-            accountType: string;
-        };
+        const decoded = verifyToken(token);
 
         // ✅ Only allow admin role
         if (decoded.accountType !== 'admin') {
@@ -188,12 +178,12 @@ export const authenticateAdmin = async (
             });
         }
 
-        // ✅ Verify admin exists in users table
+        // ✅ Verify admin exists in unified users table
         const admin = await db.query.users.findFirst({
             where: eq(users.id, decoded.userId),
         });
 
-        if (!admin || admin.role !== 'admin') {
+        if (!admin || admin.accountType !== 'admin') {
             return res.status(404).json({
                 success: false,
                 message: "Admin user not found",
@@ -253,20 +243,7 @@ export const authenticateMistri = async (
             });
         }
 
-        const secret = process.env.JWT_SECRET;
-        if (!secret) {
-            logger.error("JWT_SECRET not defined in environment variables");
-            return res.status(500).json({
-                success: false,
-                message: "Internal server error",
-            });
-        }
-
-        const decoded = jwt.verify(token, secret) as {
-            userId: string;
-            type: string;
-            accountType: string;
-        };
+        const decoded = verifyToken(token);
 
         // ✅ Only allow mistri role
         if (decoded.accountType !== 'mistri') {
@@ -276,9 +253,9 @@ export const authenticateMistri = async (
             });
         }
 
-        // ✅ Verify mistri exists in mistriAccounts table
-        const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.id, decoded.userId),
+        // ✅ Verify mistri exists in unified users table
+        const mistri = await db.query.users.findFirst({
+            where: eq(users.id, decoded.userId),
         });
 
         if (!mistri || mistri.accountType !== 'mistri') {
@@ -341,20 +318,7 @@ export const authenticateUser = async (
             });
         }
 
-        const secret = process.env.JWT_SECRET;
-        if (!secret) {
-            logger.error("JWT_SECRET not defined in environment variables");
-            return res.status(500).json({
-                success: false,
-                message: "Internal server error",
-            });
-        }
-
-        const decoded = jwt.verify(token, secret) as {
-            userId: string;
-            type: string;
-            accountType: string;
-        };
+        const decoded = verifyToken(token);
 
         // ✅ Only allow user role
         if (decoded.accountType !== 'user') {
@@ -364,9 +328,9 @@ export const authenticateUser = async (
             });
         }
 
-        // ✅ Verify user exists in userAccounts table
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.id, decoded.userId),
+        // ✅ Verify user exists in unified users table
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, decoded.userId),
         });
 
         if (!user || user.accountType !== 'user') {
@@ -473,20 +437,10 @@ export const optionalAuthenticate = async (
             return next();
         }
 
-        const secret = process.env.JWT_SECRET;
-        if (!secret) {
-            return next();
-        }
+        const decoded = verifyToken(token);
+        const user = await findUserById(decoded.userId);
 
-        const decoded = jwt.verify(token, secret) as {
-            userId: string;
-            type: string;
-            accountType: string;
-        };
-
-        const user = await findUserById(decoded.userId, decoded.accountType);
-
-        if (user && user.isActive) {
+        if (user && user.isActive && user.accountType === decoded.accountType) {
             (req as any).user = decoded;
             (req as any).accountType = decoded.accountType;
         }
@@ -496,4 +450,184 @@ export const optionalAuthenticate = async (
         // If token is invalid, continue as guest
         next();
     }
+};
+
+// ============================================
+// MULTI-ROLE AUTHENTICATE
+// ============================================
+
+/**
+ * Authenticate and allow multiple roles
+ * Usage: authenticateRoles(['admin', 'mistri'])
+ */
+export const authenticateRoles = (allowedRoles: string[]) => {
+    return async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const token = extractToken(req);
+
+            if (!token) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Authentication required",
+                });
+            }
+
+            const decoded = verifyToken(token);
+
+            // Check if user's role is allowed
+            if (!allowedRoles.includes(decoded.accountType)) {
+                return res.status(403).json({
+                    success: false,
+                    message: `Access denied. Allowed roles: ${allowedRoles.join(', ')}`,
+                });
+            }
+
+            // Verify user exists in unified users table
+            const user = await findUserById(decoded.userId);
+
+            if (!user) {
+                return res.status(401).json({
+                    success: false,
+                    message: "User not found",
+                });
+            }
+
+            if (user.accountType !== decoded.accountType) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Invalid account type",
+                });
+            }
+
+            if (!user.isActive) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Account is deactivated",
+                });
+            }
+
+            (req as any).user = decoded;
+            (req as any).accountType = decoded.accountType;
+
+            next();
+        } catch (error) {
+            if (error instanceof jwt.JsonWebTokenError) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Invalid token",
+                });
+            }
+            if (error instanceof jwt.TokenExpiredError) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Token expired",
+                });
+            }
+
+            logger.error("Role authentication error:", error);
+            return res.status(500).json({
+                success: false,
+                message: "Internal server error",
+            });
+        }
+    };
+};
+
+// ============================================
+// AUTHENTICATE WITH PERMISSION CHECK
+// ============================================
+
+/**
+ * Authenticate and check specific permissions
+ * Usage: authenticateWithPermission('manage_users')
+ */
+export const authenticateWithPermission = (requiredPermission: string) => {
+    return async (req: Request, res: Response, next: NextFunction) => {
+        try {
+            const token = extractToken(req);
+
+            if (!token) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Authentication required",
+                });
+            }
+
+            const decoded = verifyToken(token);
+
+            // Only admins have permissions
+            if (decoded.accountType !== 'admin') {
+                return res.status(403).json({
+                    success: false,
+                    message: "Admin access required",
+                });
+            }
+
+            // Verify admin exists
+            const admin = await db.query.users.findFirst({
+                where: eq(users.id, decoded.userId),
+            });
+
+            if (!admin || admin.accountType !== 'admin') {
+                return res.status(404).json({
+                    success: false,
+                    message: "Admin user not found",
+                });
+            }
+
+            if (!admin.isActive) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Account is deactivated",
+                });
+            }
+
+            // Get employee profile for permissions
+            // This assumes you have an employee_profiles table
+            // If not, you can skip this check or implement it differently
+            try {
+                const { employeeProfiles } = await import("../db/schema");
+                const profile = await db.query.employeeProfiles.findFirst({
+                    where: eq(employeeProfiles.userId, decoded.userId),
+                });
+
+                if (profile) {
+                    const permissions = profile.permissions as string[] || [];
+                    if (!permissions.includes(requiredPermission) && !permissions.includes('*')) {
+                        return res.status(403).json({
+                            success: false,
+                            message: `Permission '${requiredPermission}' required`,
+                        });
+                    }
+                }
+            } catch (error) {
+                // If employee_profiles table doesn't exist, skip permission check
+                logger.debug("Employee profiles table not found, skipping permission check");
+            }
+
+            (req as any).user = decoded;
+            (req as any).accountType = 'admin';
+
+            next();
+        } catch (error) {
+            if (error instanceof jwt.JsonWebTokenError) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Invalid token",
+                });
+            }
+            if (error instanceof jwt.TokenExpiredError) {
+                return res.status(401).json({
+                    success: false,
+                    message: "Token expired",
+                });
+            }
+
+            logger.error("Permission authentication error:", error);
+            return res.status(500).json({
+                success: false,
+                message: "Internal server error",
+            });
+        }
+    };
 };

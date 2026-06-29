@@ -3,8 +3,7 @@ import { Request, Response } from "express";
 import { db } from "../../db";
 import { 
     ratings, 
-    userAccounts,        // ✅ Customer accounts
-    mistriAccounts,      // ✅ Mistri accounts
+    users,          // ✅ Mistri accounts
     mistriProfiles 
 } from "../../db/schema";
 import { eq, and, desc, avg } from "drizzle-orm";
@@ -49,7 +48,7 @@ export const getAdminRatings = async (req: Request, res: Response) => {
 
         const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-        // ✅ Get customer names from userAccounts
+        // ✅ Get customer names from users
         const rows = await db
             .select({
                 id: ratings.id,
@@ -62,10 +61,10 @@ export const getAdminRatings = async (req: Request, res: Response) => {
                 customerId: ratings.customerId,
                 mistriId: ratings.mistriId,
                 serviceRequestId: ratings.serviceRequestId,
-                customerName: userAccounts.fullName,
+                customerName: users.fullName,
             })
             .from(ratings)
-            .innerJoin(userAccounts, eq(ratings.customerId, userAccounts.id))
+            .innerJoin(users, eq(ratings.customerId, users.id))
             .where(whereClause)
             .orderBy(desc(ratings.createdAt));
 
@@ -73,9 +72,9 @@ export const getAdminRatings = async (req: Request, res: Response) => {
         const withMistri = await Promise.all(
             rows.map(async (r) => {
                 const mistri = await db
-                    .select({ fullName: mistriAccounts.fullName })
-                    .from(mistriAccounts)
-                    .where(eq(mistriAccounts.id, r.mistriId))
+                    .select({ fullName: users.fullName })
+                    .from(users)
+                    .where(eq(users.id, r.mistriId))
                     .limit(1);
                 return { 
                     ...r, 
@@ -320,11 +319,11 @@ export const getMistriRatings = async (req: Request, res: Response) => {
                 rating: ratings.rating,
                 review: ratings.review,
                 createdAt: ratings.createdAt,
-                customerName: userAccounts.fullName,
+                customerName: users.fullName,
                 customerId: ratings.customerId,
             })
             .from(ratings)
-            .innerJoin(userAccounts, eq(ratings.customerId, userAccounts.id))
+            .innerJoin(users, eq(ratings.customerId, users.id))
             .where(and(
                 eq(ratings.mistriId, mistriId),
                 eq(ratings.isApproved, true)

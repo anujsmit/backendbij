@@ -8,16 +8,14 @@ import {
     subOrders,
     subOrderItems,
     subOrderTimeline,
-    userAccounts,        // ✅ Customer accounts
-    mistriAccounts,      // ✅ Mistri accounts
+    users,                // ✅ Unified users table (customers, mistris, admins)
     mistriProfiles,
     services,
     serviceRequests,
-    users,               // ✅ Admin users
 } from "../../db/schema";
 import { eq, and, desc, sql, ilike, or, inArray } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { createNotification } from "../notificationController";
+import { createNotification } from "../users/notificationController";
 import { createAuditLog } from "../../services/auditLog";
 import { z } from "zod";
 
@@ -25,8 +23,9 @@ import { z } from "zod";
 // ALIASES
 // ============================================
 
-const customer = alias(userAccounts, "customer");
-const mistri = alias(mistriAccounts, "mistri");
+// ✅ Use unified users table with accountType filters
+const customer = alias(users, "customer");
+const mistri = alias(users, "mistri");
 
 // ============================================
 // BATCH ASSIGNMENT SCHEMA
@@ -95,6 +94,7 @@ export const getAllOrders = async (req: Request, res: Response) => {
 
         const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
+        // ✅ Use unified users table with accountType filters
         const ordersList = await db
             .select({
                 id: orders.id,
@@ -122,8 +122,14 @@ export const getAllOrders = async (req: Request, res: Response) => {
                 assignedSubOrderCount: sql<number>`(SELECT COUNT(*) FROM sub_orders WHERE sub_orders.order_id = orders.id AND sub_orders.status IN ('assigned', 'in_progress', 'completed'))`,
             })
             .from(orders)
-            .innerJoin(customer, eq(orders.customerId, customer.id))
-            .leftJoin(mistri, eq(orders.assignedMistriId, mistri.id))
+            .innerJoin(customer, and(
+                eq(orders.customerId, customer.id),
+                eq(customer.accountType, "user")
+            ))
+            .leftJoin(mistri, and(
+                eq(orders.assignedMistriId, mistri.id),
+                eq(mistri.accountType, "mistri")
+            ))
             .where(whereClause)
             .orderBy(desc(orders.createdAt))
             .limit(limitNum)
@@ -183,25 +189,25 @@ export const getOrderById = async (req: Request, res: Response) => {
 
         const order = orderData[0];
 
-        // ✅ Get customer details from userAccounts
+        // ✅ Get customer details from unified users table
         const customerData = await db
             .select({
-                fullName: userAccounts.fullName,
-                phoneNumber: userAccounts.phoneNumber,
+                fullName: users.fullName,
+                phoneNumber: users.phoneNumber,
             })
-            .from(userAccounts)
-            .where(eq(userAccounts.id, order.customerId))
+            .from(users)
+            .where(and(eq(users.id, order.customerId), eq(users.accountType, "user")))
             .limit(1);
 
         const customerInfo = customerData[0] || { fullName: '', phoneNumber: '' };
 
-        // ✅ Get mistri details from mistriAccounts
+        // ✅ Get mistri details from unified users table
         let mistriName = null;
         if (order.assignedMistriId) {
             const mistriData = await db
-                .select({ fullName: mistriAccounts.fullName })
-                .from(mistriAccounts)
-                .where(eq(mistriAccounts.id, order.assignedMistriId))
+                .select({ fullName: users.fullName })
+                .from(users)
+                .where(and(eq(users.id, order.assignedMistriId), eq(users.accountType, "mistri")))
                 .limit(1);
             mistriName = mistriData[0]?.fullName || null;
         }
@@ -222,13 +228,16 @@ export const getOrderById = async (req: Request, res: Response) => {
                 completedAt: subOrders.completedAt,
                 createdAt: subOrders.createdAt,
                 adminNotes: subOrders.adminNotes,
-                mistriName: mistriAccounts.fullName,
-                mistriPhone: mistriAccounts.phoneNumber,
+                mistriName: users.fullName,
+                mistriPhone: users.phoneNumber,
                 mistriRating: mistriProfiles.averageRating,
                 itemCount: sql<number>`(SELECT COUNT(*) FROM sub_order_items WHERE sub_order_items.sub_order_id = sub_orders.id)`,
             })
             .from(subOrders)
-            .leftJoin(mistriAccounts, eq(subOrders.assignedMistriId, mistriAccounts.id))
+            .leftJoin(users, and(
+                eq(subOrders.assignedMistriId, users.id),
+                eq(users.accountType, "mistri")
+            ))
             .leftJoin(mistriProfiles, eq(subOrders.assignedMistriId, mistriProfiles.mistriId))
             .where(eq(subOrders.orderId, orderId))
             .orderBy(desc(subOrders.createdAt));
@@ -375,12 +384,15 @@ export const getSubOrdersByOrder = async (req: Request, res: Response) => {
                 completedAt: subOrders.completedAt,
                 createdAt: subOrders.createdAt,
                 adminNotes: subOrders.adminNotes,
-                mistriName: mistriAccounts.fullName,
-                mistriPhone: mistriAccounts.phoneNumber,
+                mistriName: users.fullName,
+                mistriPhone: users.phoneNumber,
                 itemCount: sql<number>`(SELECT COUNT(*) FROM sub_order_items WHERE sub_order_items.sub_order_id = sub_orders.id)`,
             })
             .from(subOrders)
-            .leftJoin(mistriAccounts, eq(subOrders.assignedMistriId, mistriAccounts.id))
+            .leftJoin(users, and(
+                eq(subOrders.assignedMistriId, users.id),
+                eq(users.accountType, "mistri")
+            ))
             .where(eq(subOrders.orderId, orderId))
             .orderBy(desc(subOrders.createdAt));
 
@@ -425,11 +437,14 @@ export const getSubOrdersByOrder = async (req: Request, res: Response) => {
                 id: orders.id,
                 status: orders.status,
                 address: orders.address,
-                customerName: userAccounts.fullName,
-                customerPhone: userAccounts.phoneNumber,
+                customerName: users.fullName,
+                customerPhone: users.phoneNumber,
             })
             .from(orders)
-            .innerJoin(userAccounts, eq(orders.customerId, userAccounts.id))
+            .innerJoin(users, and(
+                eq(orders.customerId, users.id),
+                eq(users.accountType, "user")
+            ))
             .where(eq(orders.id, orderId))
             .limit(1);
 
@@ -517,20 +532,20 @@ export const assignMistriToSubOrder = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Check mistri from mistriAccounts
+        // ✅ Check mistri from unified users table
         const mistriResult = await db
             .select({
-                id: mistriAccounts.id,
-                fullName: mistriAccounts.fullName,
-                phoneNumber: mistriAccounts.phoneNumber,
+                id: users.id,
+                fullName: users.fullName,
+                phoneNumber: users.phoneNumber,
                 approvalStatus: mistriProfiles.approvalStatus,
                 serviceId: mistriProfiles.serviceId,
                 isAvailable: mistriProfiles.isAvailable,
                 availabilityStatus: mistriProfiles.availabilityStatus,
             })
-            .from(mistriAccounts)
-            .leftJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
-            .where(and(eq(mistriAccounts.id, mistriId), eq(mistriAccounts.accountType, "mistri")))
+            .from(users)
+            .leftJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
+            .where(and(eq(users.id, mistriId), eq(users.accountType, "mistri")))
             .limit(1);
 
         if (!mistriResult || mistriResult.length === 0) {
@@ -727,11 +742,14 @@ export const assignMistriToSubOrder = async (req: Request, res: Response) => {
                 status: subOrders.status,
                 assignedMistriId: subOrders.assignedMistriId,
                 assignedAt: subOrders.assignedAt,
-                mistriName: mistriAccounts.fullName,
-                mistriPhone: mistriAccounts.phoneNumber,
+                mistriName: users.fullName,
+                mistriPhone: users.phoneNumber,
             })
             .from(subOrders)
-            .leftJoin(mistriAccounts, eq(subOrders.assignedMistriId, mistriAccounts.id))
+            .leftJoin(users, and(
+                eq(subOrders.assignedMistriId, users.id),
+                eq(users.accountType, "mistri")
+            ))
             .where(eq(subOrders.id, subOrderId))
             .limit(1);
 
@@ -820,18 +838,19 @@ export const batchAssignSubOrders = async (req: Request, res: Response) => {
                     continue;
                 }
 
+                // ✅ Check mistri from unified users table
                 const mistriInfo = await db
                     .select({
-                        id: mistriAccounts.id,
-                        fullName: mistriAccounts.fullName,
-                        phoneNumber: mistriAccounts.phoneNumber,
+                        id: users.id,
+                        fullName: users.fullName,
+                        phoneNumber: users.phoneNumber,
                         approvalStatus: mistriProfiles.approvalStatus,
                         serviceId: mistriProfiles.serviceId,
                         isAvailable: mistriProfiles.isAvailable,
                     })
-                    .from(mistriAccounts)
-                    .leftJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
-                    .where(and(eq(mistriAccounts.id, assignment.mistriId), eq(mistriAccounts.accountType, "mistri")))
+                    .from(users)
+                    .leftJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
+                    .where(and(eq(users.id, assignment.mistriId), eq(users.accountType, "mistri")))
                     .limit(1);
 
                 if (!mistriInfo || mistriInfo.length === 0) {
@@ -897,11 +916,11 @@ export const batchAssignSubOrders = async (req: Request, res: Response) => {
 
                 const [mistriUser] = await db
                     .select({
-                        fullName: mistriAccounts.fullName,
-                        phoneNumber: mistriAccounts.phoneNumber,
+                        fullName: users.fullName,
+                        phoneNumber: users.phoneNumber,
                     })
-                    .from(mistriAccounts)
-                    .where(eq(mistriAccounts.id, assignment.mistriId))
+                    .from(users)
+                    .where(and(eq(users.id, assignment.mistriId), eq(users.accountType, "mistri")))
                     .limit(1);
 
                 await db.insert(subOrderTimeline).values({
@@ -1049,11 +1068,14 @@ export const getOrderAssignmentStatus = async (req: Request, res: Response) => {
                 assignedMistriId: subOrders.assignedMistriId,
                 assignedAt: subOrders.assignedAt,
                 completedAt: subOrders.completedAt,
-                mistriName: mistriAccounts.fullName,
-                mistriPhone: mistriAccounts.phoneNumber,
+                mistriName: users.fullName,
+                mistriPhone: users.phoneNumber,
             })
             .from(subOrders)
-            .leftJoin(mistriAccounts, eq(subOrders.assignedMistriId, mistriAccounts.id))
+            .leftJoin(users, and(
+                eq(subOrders.assignedMistriId, users.id),
+                eq(users.accountType, "mistri")
+            ))
             .where(eq(subOrders.orderId, orderId))
             .orderBy(desc(subOrders.createdAt));
 
@@ -1132,18 +1154,18 @@ export const assignMistriToOrder = async (req: Request, res: Response) => {
 
         const order = orderResult[0];
 
-        // ✅ Check mistri from mistriAccounts
+        // ✅ Check mistri from unified users table
         const mistriResult = await db
             .select({
-                id: mistriAccounts.id,
-                fullName: mistriAccounts.fullName,
-                phoneNumber: mistriAccounts.phoneNumber,
+                id: users.id,
+                fullName: users.fullName,
+                phoneNumber: users.phoneNumber,
                 approvalStatus: mistriProfiles.approvalStatus,
                 serviceId: mistriProfiles.serviceId,
             })
-            .from(mistriAccounts)
-            .leftJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
-            .where(and(eq(mistriAccounts.id, mistriId), eq(mistriAccounts.accountType, "mistri")))
+            .from(users)
+            .leftJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
+            .where(and(eq(users.id, mistriId), eq(users.accountType, "mistri")))
             .limit(1);
 
         if (!mistriResult || mistriResult.length === 0) {

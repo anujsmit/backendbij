@@ -74,13 +74,16 @@ export const adminLogin = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Find admin user (only in users table)
+        // ✅ Find admin user in unified users table
         const user = await db.query.users.findFirst({
-            where: eq(users.phoneNumber, cleanPhone),
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'admin')  // ✅ Changed from role to accountType
+            ),
         });
 
         // ✅ Check if user exists and is admin
-        if (!user || user.role !== "admin") {
+        if (!user) {
             await db.insert(loginAttempts).values({
                 phoneNumber: cleanPhone,
                 accountType: 'admin',
@@ -204,7 +207,7 @@ export const adminLogin = async (req: Request, res: Response) => {
                 id: user.id,
                 fullName: user.fullName,
                 phoneNumber: user.phoneNumber,
-                role: user.role,
+                accountType: user.accountType,  // ✅ Changed from role to accountType
                 isActive: user.isActive,
                 staffRole: employeeProfile?.staffRole || "super_admin",
                 permissions: employeeProfile?.permissions || ["*"],
@@ -345,10 +348,13 @@ export const adminGetMe = async (req: Request, res: Response) => {
         }
 
         const user = await db.query.users.findFirst({
-            where: eq(users.id, userId)
+            where: and(
+                eq(users.id, userId),
+                eq(users.accountType, 'admin')  // ✅ Changed from role to accountType
+            )
         });
 
-        if (!user || user.role !== "admin") {
+        if (!user) {
             return res.status(404).json({
                 success: false,
                 message: "Admin user not found"
@@ -371,7 +377,7 @@ export const adminGetMe = async (req: Request, res: Response) => {
                 id: user.id,
                 fullName: user.fullName,
                 phoneNumber: user.phoneNumber,
-                role: user.role,
+                accountType: user.accountType,  // ✅ Changed from role to accountType
                 isActive: user.isActive,
                 staffRole: employeeProfile?.staffRole || "super_admin",
                 permissions: employeeProfile?.permissions || ["*"],
@@ -464,6 +470,107 @@ export const adminChangePassword = async (req: Request, res: Response) => {
         return res.status(500).json({
             success: false,
             message: "Failed to change password"
+        });
+    }
+};
+
+// ============================================
+// ADMIN REGISTER (For creating new admin users)
+// ============================================
+
+export const adminRegister = async (req: Request, res: Response) => {
+    try {
+        const { phone, fullName, password, staffRole, permissions, designation } = req.body;
+        const performerId = (req as any).user?.userId;
+
+        // ✅ Validate input
+        if (!phone || !fullName || !password) {
+            return res.status(400).json({
+                success: false,
+                message: "Phone number, full name, and password are required"
+            });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({
+                success: false,
+                message: "Password must be at least 6 characters"
+            });
+        }
+
+        const cleanPhone = normalizePhone(phone);
+
+        // ✅ Check if user already exists
+        const existingUser = await db.query.users.findFirst({
+            where: eq(users.phoneNumber, cleanPhone)
+        });
+
+        if (existingUser) {
+            return res.status(409).json({
+                success: false,
+                message: "User with this phone number already exists"
+            });
+        }
+
+        // ✅ Hash password
+        const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+        // ✅ Create admin user in unified users table
+        const [newAdmin] = await db.insert(users).values({
+            phoneNumber: cleanPhone,
+            fullName: fullName.trim(),
+            passwordHash: hashedPassword,
+            accountType: 'admin',  // ✅ Set as admin
+            isActive: true,
+            isVerified: true,
+            isOnboarded: true,
+        }).returning();
+
+        // ✅ Create employee profile
+        if (newAdmin) {
+            try {
+                await db.insert(employeeProfiles).values({
+                    userId: newAdmin.id,
+                    staffRole: staffRole || "support",
+                    permissions: permissions || ["*"],
+                    designation: designation || null,
+                    createdBy: performerId || newAdmin.id,
+                });
+            } catch (error) {
+                logger.error("Failed to create employee profile:", error);
+                // Don't fail the registration if employee profile creation fails
+            }
+        }
+
+        // ✅ Create audit log
+        await createAuditLog({
+            entityType: "user",
+            entityId: newAdmin.id,
+            action: "admin_registration",
+            performedBy: performerId || newAdmin.id,
+            performedByRole: "admin",
+            newValue: { phone: cleanPhone, fullName: fullName.trim(), staffRole },
+        });
+
+        return res.status(201).json({
+            success: true,
+            message: "Admin user created successfully",
+            user: {
+                id: newAdmin.id,
+                fullName: newAdmin.fullName,
+                phoneNumber: newAdmin.phoneNumber,
+                accountType: newAdmin.accountType,
+                isActive: newAdmin.isActive,
+                staffRole: staffRole || "support",
+                permissions: permissions || ["*"],
+                designation: designation || null,
+            }
+        });
+    } catch (error) {
+        logger.error("Admin registration error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to create admin user"
         });
     }
 };

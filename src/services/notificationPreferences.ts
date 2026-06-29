@@ -1,6 +1,6 @@
 // backend/src/services/notificationPreferences.ts
 import { db } from "../db";
-import { mistriAccounts, notificationPreferences, userAccounts, users } from "../db/schema";
+import { users, notificationPreferences } from "../db/schema";
 import { eq, and } from "drizzle-orm";
 import { logger } from "../utils/logger";
 
@@ -146,33 +146,17 @@ export const shouldSendNotification = async (
     channel: 'push' | 'sms'
 ): Promise<boolean> => {
     try {
-        // Get user's account type
-        let accountType: 'user' | 'mistri' | 'admin' | null = null;
-        
-        // Check all tables
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.id, userId)
+        // ✅ Get user's account type from unified users table
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, userId)
         });
-        if (user) accountType = 'user';
-        
-        if (!accountType) {
-            const mistri = await db.query.mistriAccounts.findFirst({
-                where: eq(mistriAccounts.id, userId)
-            });
-            if (mistri) accountType = 'mistri';
-        }
-        
-        if (!accountType) {
-            const admin = await db.query.users.findFirst({
-                where: eq(users.id, userId)
-            });
-            if (admin) accountType = 'admin';
-        }
 
-        if (!accountType) {
-            // User not found, default to true
+        if (!user) {
+            logger.warn(`User ${userId} not found, defaulting to send notification`);
             return true;
         }
+
+        const accountType = user.accountType;
 
         const prefs = await getPreferences(userId, accountType);
 
@@ -208,5 +192,147 @@ export const shouldSendNotification = async (
     } catch (error) {
         logger.error("Error checking notification preferences:", error);
         return true; // Default to true on error
+    }
+};
+
+// ============================================
+// BATCH CHECK NOTIFICATIONS
+// ============================================
+
+export const shouldSendNotificationsBatch = async (
+    userIds: string[],
+    type: string,
+    channel: 'push' | 'sms'
+): Promise<Map<string, boolean>> => {
+    try {
+        const results = new Map<string, boolean>();
+        
+        // ✅ Get all users in one query
+        const usersList = await db.query.users.findMany({
+            where: (users, { inArray }) => inArray(users.id, userIds)
+        });
+
+        // Create a map for quick lookup
+        const userMap = new Map(usersList.map(u => [u.id, u]));
+
+        for (const userId of userIds) {
+            const user = userMap.get(userId);
+            if (!user) {
+                results.set(userId, true);
+                continue;
+            }
+
+            const prefs = await getPreferences(userId, user.accountType);
+
+            // Check global channel settings
+            if (channel === 'push' && !prefs.pushEnabled) {
+                results.set(userId, false);
+                continue;
+            }
+            if (channel === 'sms' && !prefs.smsEnabled) {
+                results.set(userId, false);
+                continue;
+            }
+
+            // Check type-specific settings
+            if (prefs.typeSettings && prefs.typeSettings[type]) {
+                const typeSetting = prefs.typeSettings[type];
+                if (channel === 'push' && typeSetting.push === false) {
+                    results.set(userId, false);
+                    continue;
+                }
+                if (channel === 'sms' && typeSetting.sms === false) {
+                    results.set(userId, false);
+                    continue;
+                }
+            }
+
+            // Check quiet hours
+            if (prefs.quietHoursStart && prefs.quietHoursEnd) {
+                const now = new Date();
+                const currentTime = now.getHours() * 60 + now.getMinutes();
+                const [startHour, startMin] = prefs.quietHoursStart.split(':').map(Number);
+                const [endHour, endMin] = prefs.quietHoursEnd.split(':').map(Number);
+                const start = startHour * 60 + startMin;
+                const end = endHour * 60 + endMin;
+
+                if (start <= end) {
+                    if (currentTime >= start && currentTime <= end) {
+                        results.set(userId, false);
+                        continue;
+                    }
+                } else {
+                    if (currentTime >= start || currentTime <= end) {
+                        results.set(userId, false);
+                        continue;
+                    }
+                }
+            }
+
+            results.set(userId, true);
+        }
+
+        return results;
+    } catch (error) {
+        logger.error("Error batch checking notification preferences:", error);
+        // Default to true for all on error
+        return new Map(userIds.map(id => [id, true]));
+    }
+};
+
+// ============================================
+// GET PREFERENCES BATCH
+// ============================================
+
+export const getPreferencesBatch = async (
+    userIds: string[]
+): Promise<Map<string, NotificationPreferences>> => {
+    try {
+        const results = new Map<string, NotificationPreferences>();
+        
+        // ✅ Get all users in one query
+        const usersList = await db.query.users.findMany({
+            where: (users, { inArray }) => inArray(users.id, userIds)
+        });
+
+        const userMap = new Map(usersList.map(u => [u.id, u]));
+
+        // Get all preferences in one query
+        const prefsList = await db.query.notificationPreferences.findMany({
+            where: (notificationPreferences, { inArray }) => 
+                inArray(notificationPreferences.userId, userIds)
+        });
+
+        const prefsMap = new Map(prefsList.map(p => [p.userId, p]));
+
+        for (const userId of userIds) {
+            const user = userMap.get(userId);
+            const prefs = prefsMap.get(userId);
+
+            if (!prefs) {
+                // Return defaults
+                results.set(userId, {
+                    pushEnabled: true,
+                    smsEnabled: true,
+                    quietHoursStart: null,
+                    quietHoursEnd: null,
+                    typeSettings: null,
+                });
+                continue;
+            }
+
+            results.set(userId, {
+                pushEnabled: prefs.pushEnabled,
+                smsEnabled: prefs.smsEnabled,
+                quietHoursStart: prefs.quietHoursStart,
+                quietHoursEnd: prefs.quietHoursEnd,
+                typeSettings: prefs.typeSettings as Record<string, { push?: boolean; sms?: boolean }> | null,
+            });
+        }
+
+        return results;
+    } catch (error) {
+        logger.error("Error batch getting notification preferences:", error);
+        return new Map();
     }
 };

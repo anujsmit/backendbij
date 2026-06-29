@@ -4,13 +4,11 @@ import { Request, Response } from "express";
 import { db } from "../../db";
 import { 
     consultations, 
-    userAccounts, 
-    users,
-    mistriAccounts  // ✅ ADD THIS IMPORT
+    users,          // ✅ Unified users table (customers, mistris, admins)
 } from "../../db/schema";
 import { eq, desc, and, count } from "drizzle-orm";
 import { z } from "zod";
-import { createNotification } from "../notificationController";
+import { createNotification } from "./notificationController";
 import { createAuditLog } from "../../services/auditLog";
 import { sendSms } from "../../services/sms";
 import { shouldSendNotification } from "../../services/notificationPreferences";
@@ -85,12 +83,15 @@ export const createConsultation = async (req: Request, res: Response) => {
             urgency
         } = parsed.data;
 
-        // Get user details from userAccounts
+        // ✅ Get user details from unified users table
         let user = null;
         if (userId) {
             try {
-                user = await db.query.userAccounts.findFirst({
-                    where: eq(userAccounts.id, userId)
+                user = await db.query.users.findFirst({
+                    where: and(
+                        eq(users.id, userId),
+                        eq(users.accountType, "user")
+                    )
                 });
             } catch (dbError) {
                 console.error('❌ Database error fetching user:', dbError);
@@ -125,10 +126,10 @@ export const createConsultation = async (req: Request, res: Response) => {
             });
         }
 
-        // Notify admins (non-blocking)
+        // ✅ Notify admins from unified users table
         try {
             const admins = await db.query.users.findMany({
-                where: eq(users.role, "admin"),
+                where: eq(users.accountType, "admin"),
             });
 
             for (const admin of admins) {
@@ -272,6 +273,7 @@ export const getConsultationById = async (req: Request, res: Response) => {
         const userId = (req as any).user?.userId;
         const accountType = (req as any).user?.accountType;
 
+        // ✅ Get consultation with customer details from unified users table
         const [consultation] = await db
             .select({
                 id: consultations.id,
@@ -292,11 +294,14 @@ export const getConsultationById = async (req: Request, res: Response) => {
                 createdAt: consultations.createdAt,
                 updatedAt: consultations.updatedAt,
                 completedAt: consultations.completedAt,
-                customerName: userAccounts.fullName,
-                customerPhone: userAccounts.phoneNumber,
+                customerName: users.fullName,
+                customerPhone: users.phoneNumber,
             })
             .from(consultations)
-            .leftJoin(userAccounts, eq(consultations.userId, userAccounts.id))
+            .leftJoin(users, and(
+                eq(consultations.userId, users.id),
+                eq(users.accountType, "user")
+            ))
             .where(eq(consultations.id, id))
             .limit(1);
 
@@ -315,17 +320,20 @@ export const getConsultationById = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ FIXED: Get assigned mistri details from mistriAccounts
+        // ✅ Get assigned mistri details from unified users table
         let assignedMistri = null;
         if (consultation.assignedTo) {
             const [mistri] = await db
                 .select({
-                    id: mistriAccounts.id,
-                    fullName: mistriAccounts.fullName,
-                    phoneNumber: mistriAccounts.phoneNumber,
+                    id: users.id,
+                    fullName: users.fullName,
+                    phoneNumber: users.phoneNumber,
                 })
-                .from(mistriAccounts)
-                .where(eq(mistriAccounts.id, consultation.assignedTo))
+                .from(users)
+                .where(and(
+                    eq(users.id, consultation.assignedTo),
+                    eq(users.accountType, "mistri")
+                ))
                 .limit(1);
             
             if (mistri) {

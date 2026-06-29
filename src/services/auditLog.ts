@@ -1,6 +1,6 @@
 // backend/src/services/auditLog.ts
 import { db } from "../db";
-import { auditLogs, users, userAccounts, mistriAccounts } from "../db/schema";
+import { auditLogs, users } from "../db/schema";
 import { and, eq, desc, gte, lt, SQL } from "drizzle-orm";
 import { logger } from "../utils/logger";
 
@@ -20,29 +20,14 @@ export interface AuditLogEntry {
 // ============================================
 
 /**
- * Get user's full name from the appropriate table
+ * Get user's full name from the unified users table
  */
 async function getUserName(userId: string): Promise<string | null> {
   try {
-    // Check admin users
-    const admin = await db.query.users.findFirst({
+    const user = await db.query.users.findFirst({
       where: eq(users.id, userId)
     });
-    if (admin) return admin.fullName;
-
-    // Check mistri accounts
-    const mistri = await db.query.mistriAccounts.findFirst({
-      where: eq(mistriAccounts.id, userId)
-    });
-    if (mistri) return mistri.fullName;
-
-    // Check user accounts
-    const user = await db.query.userAccounts.findFirst({
-      where: eq(userAccounts.id, userId)
-    });
-    if (user) return user.fullName;
-
-    return null;
+    return user?.fullName || null;
   } catch (error) {
     logger.error(`Error getting user name for ${userId}:`, error);
     return null;
@@ -50,28 +35,54 @@ async function getUserName(userId: string): Promise<string | null> {
 }
 
 /**
- * Get user's account type from the appropriate table
+ * Get user's account type from the unified users table
  */
 async function getUserAccountType(userId: string): Promise<'user' | 'mistri' | 'admin' | null> {
   try {
-    const admin = await db.query.users.findFirst({
+    const user = await db.query.users.findFirst({
       where: eq(users.id, userId)
     });
-    if (admin) return 'admin';
-
-    const mistri = await db.query.mistriAccounts.findFirst({
-      where: eq(mistriAccounts.id, userId)
-    });
-    if (mistri) return 'mistri';
-
-    const user = await db.query.userAccounts.findFirst({
-      where: eq(userAccounts.id, userId)
-    });
-    if (user) return 'user';
-
-    return null;
+    return user?.accountType || null;
   } catch (error) {
     logger.error(`Error getting account type for ${userId}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Get user details from the unified users table
+ */
+async function getUserDetails(userId: string): Promise<{ fullName: string; accountType: string } | null> {
+  try {
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, userId)
+    });
+    if (!user) return null;
+    return {
+      fullName: user.fullName,
+      accountType: user.accountType,
+    };
+  } catch (error) {
+    logger.error(`Error getting user details for ${userId}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Validate that a user exists and get their details
+ */
+async function validateAndGetUser(userId: string): Promise<{ fullName: string; accountType: string } | null> {
+  try {
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, userId)
+    });
+    if (!user) return null;
+    return {
+      fullName: user.fullName,
+      accountType: user.accountType,
+    };
+  } catch (error) {
+    logger.error(`Error validating user ${userId}:`, error);
     return null;
   }
 }
@@ -118,6 +129,47 @@ export const createAuditLog = async (entry: AuditLogEntry): Promise<void> => {
   }
 };
 
+/**
+ * Create multiple audit log entries in batch
+ */
+export const createAuditLogsBatch = async (entries: AuditLogEntry[]): Promise<void> => {
+  try {
+    if (entries.length === 0) return;
+
+    // Validate all users in one query
+    const userIds = [...new Set(entries.map(e => e.performedBy))];
+    const usersList = await db.query.users.findMany({
+      where: (users, { inArray }) => inArray(users.id, userIds)
+    });
+
+    const userMap = new Map(usersList.map(u => [u.id, u]));
+
+    for (const entry of entries) {
+      const user = userMap.get(entry.performedBy);
+      if (!user) {
+        logger.warn(`User ${entry.performedBy} not found for audit log`);
+        continue;
+      }
+
+      await db.insert(auditLogs).values({
+        entityType: entry.entityType,
+        entityId: entry.entityId,
+        action: entry.action,
+        performedBy: entry.performedBy,
+        performedByRole: user.accountType as 'user' | 'mistri' | 'admin',
+        oldValue: entry.oldValue || null,
+        newValue: entry.newValue || null,
+        metadata: entry.metadata || null,
+      });
+    }
+
+    logger.debug(`Created ${entries.length} audit logs in batch`);
+  } catch (error) {
+    logger.error('Failed to create audit logs batch:', error);
+    // Don't throw - audit logging should never break business logic
+  }
+};
+
 // ============================================
 // GET AUDIT LOGS
 // ============================================
@@ -145,16 +197,17 @@ export const getAuditLogs = async (
       .limit(limit)
       .offset(offset);
 
-    // Enrich with user names
-    const logsWithNames = await Promise.all(
-      logs.map(async (log) => {
-        const userName = await getUserName(log.performedBy);
-        return {
-          ...log,
-          performedByName: userName || 'Unknown User',
-        };
-      })
-    );
+    // Enrich with user names - batch query for better performance
+    const userIds = [...new Set(logs.map(log => log.performedBy))];
+    const usersList = await db.query.users.findMany({
+      where: (users, { inArray }) => inArray(users.id, userIds)
+    });
+    const userMap = new Map(usersList.map(u => [u.id, u.fullName]));
+
+    const logsWithNames = logs.map((log) => ({
+      ...log,
+      performedByName: userMap.get(log.performedBy) || 'Unknown User',
+    }));
 
     // Get total count
     const totalResult = await db
@@ -198,15 +251,17 @@ export const getUserAuditLogs = async (
       .limit(limit)
       .offset(offset);
 
-    const logsWithNames = await Promise.all(
-      logs.map(async (log) => {
-        const userName = await getUserName(log.performedBy);
-        return {
-          ...log,
-          performedByName: userName || 'Unknown User',
-        };
-      })
-    );
+    // Enrich with user names
+    const userIds = [...new Set(logs.map(log => log.performedBy))];
+    const usersList = await db.query.users.findMany({
+      where: (users, { inArray }) => inArray(users.id, userIds)
+    });
+    const userMap = new Map(usersList.map(u => [u.id, u.fullName]));
+
+    const logsWithNames = logs.map((log) => ({
+      ...log,
+      performedByName: userMap.get(log.performedBy) || 'Unknown User',
+    }));
 
     const totalResult = await db
       .select({ count: auditLogs.id })
@@ -237,9 +292,10 @@ export const getRecentAuditLogs = async (options: {
   action?: string;
   startDate?: Date;
   endDate?: Date;
+  performedBy?: string;
 } = {}) => {
   try {
-    const { limit = 20, offset = 0, entityType, action, startDate, endDate } = options;
+    const { limit = 20, offset = 0, entityType, action, startDate, endDate, performedBy } = options;
 
     const conditions: SQL[] = [];
 
@@ -255,6 +311,9 @@ export const getRecentAuditLogs = async (options: {
     if (endDate) {
       conditions.push(lt(auditLogs.createdAt, endDate));
     }
+    if (performedBy) {
+      conditions.push(eq(auditLogs.performedBy, performedBy));
+    }
 
     const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -266,15 +325,17 @@ export const getRecentAuditLogs = async (options: {
       .limit(limit)
       .offset(offset);
 
-    const logsWithNames = await Promise.all(
-      logs.map(async (log) => {
-        const userName = await getUserName(log.performedBy);
-        return {
-          ...log,
-          performedByName: userName || 'Unknown User',
-        };
-      })
-    );
+    // Enrich with user names - batch query
+    const userIds = [...new Set(logs.map(log => log.performedBy))];
+    const usersList = await db.query.users.findMany({
+      where: (users, { inArray }) => inArray(users.id, userIds)
+    });
+    const userMap = new Map(usersList.map(u => [u.id, u.fullName]));
+
+    const logsWithNames = logs.map((log) => ({
+      ...log,
+      performedByName: userMap.get(log.performedBy) || 'Unknown User',
+    }));
 
     const totalResult = await db
       .select({ count: auditLogs.id })
@@ -308,13 +369,22 @@ export const getAuditLogSummary = async (days: number = 7) => {
       .from(auditLogs)
       .where(gte(auditLogs.createdAt, startDate));
 
+    // Get user names for top users
+    const userIds = [...new Set(logs.map(log => log.performedBy))];
+    const usersList = await db.query.users.findMany({
+      where: (users, { inArray }) => inArray(users.id, userIds)
+    });
+    const userMap = new Map(usersList.map(u => [u.id, u.fullName]));
+
     const summary = {
       total: logs.length,
       byAction: {} as Record<string, number>,
       byEntityType: {} as Record<string, number>,
       byDay: {} as Record<string, number>,
-      topUsers: {} as Record<string, number>,
+      topUsers: {} as Record<string, { id: string; name: string; count: number }>,
     };
+
+    const userCounts: Record<string, number> = {};
 
     for (const log of logs) {
       // Count by action
@@ -328,7 +398,20 @@ export const getAuditLogSummary = async (days: number = 7) => {
       summary.byDay[day] = (summary.byDay[day] || 0) + 1;
 
       // Count by user
-      summary.topUsers[log.performedBy] = (summary.topUsers[log.performedBy] || 0) + 1;
+      userCounts[log.performedBy] = (userCounts[log.performedBy] || 0) + 1;
+    }
+
+    // Convert user counts to top users with names
+    const sortedUsers = Object.entries(userCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+
+    for (const [userId, count] of sortedUsers) {
+      summary.topUsers[userId] = {
+        id: userId,
+        name: userMap.get(userId) || 'Unknown User',
+        count,
+      };
     }
 
     return summary;
@@ -353,6 +436,93 @@ export const deleteOldAuditLogs = async (olderThan: Date): Promise<number> => {
     return deletedCount;
   } catch (error) {
     logger.error('Error deleting old audit logs:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get audit logs by action type
+ */
+export const getAuditLogsByAction = async (
+  action: string,
+  limit: number = 50,
+  offset: number = 0
+) => {
+  try {
+    const logs = await db
+      .select()
+      .from(auditLogs)
+      .where(eq(auditLogs.action, action))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(limit)
+      .offset(offset);
+
+    // Enrich with user names
+    const userIds = [...new Set(logs.map(log => log.performedBy))];
+    const usersList = await db.query.users.findMany({
+      where: (users, { inArray }) => inArray(users.id, userIds)
+    });
+    const userMap = new Map(usersList.map(u => [u.id, u.fullName]));
+
+    const logsWithNames = logs.map((log) => ({
+      ...log,
+      performedByName: userMap.get(log.performedBy) || 'Unknown User',
+    }));
+
+    const totalResult = await db
+      .select({ count: auditLogs.id })
+      .from(auditLogs)
+      .where(eq(auditLogs.action, action));
+
+    return {
+      logs: logsWithNames,
+      pagination: {
+        limit,
+        offset,
+        total: totalResult.length,
+      },
+    };
+  } catch (error) {
+    logger.error('Error fetching audit logs by action:', error);
+    throw error;
+  }
+};
+
+/**
+ * Get audit log count by entity type
+ */
+export const getAuditLogCountsByEntity = async (
+  entityType?: string,
+  startDate?: Date,
+  endDate?: Date
+) => {
+  try {
+    const conditions: SQL[] = [];
+    
+    if (entityType) {
+      conditions.push(eq(auditLogs.entityType, entityType));
+    }
+    if (startDate) {
+      conditions.push(gte(auditLogs.createdAt, startDate));
+    }
+    if (endDate) {
+      conditions.push(lt(auditLogs.createdAt, endDate));
+    }
+
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const result = await db
+      .select({
+        entityType: auditLogs.entityType,
+        count: desc(auditLogs.createdAt) as any,
+      })
+      .from(auditLogs)
+      .where(whereClause)
+      .groupBy(auditLogs.entityType);
+
+    return result;
+  } catch (error) {
+    logger.error('Error getting audit log counts:', error);
     throw error;
   }
 };

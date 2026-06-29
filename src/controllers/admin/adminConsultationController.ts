@@ -4,13 +4,11 @@ import { Request, Response } from "express";
 import { db } from "../../db";
 import { 
     consultations, 
-    users, 
-    userAccounts, 
-    mistriAccounts 
+    users,                // ✅ Unified users table (customers, mistris, admins)
 } from "../../db/schema";
 import { eq, desc, and, or, ilike, count, sql } from "drizzle-orm";
 import { z } from "zod";
-import { createNotification } from "../notificationController";
+import { createNotification } from "../users/notificationController";
 import { createAuditLog } from "../../services/auditLog";
 import { sendSms } from "../../services/sms";
 import { shouldSendNotification } from "../../services/notificationPreferences";
@@ -31,6 +29,22 @@ const assignConsultationSchema = z.object({
     mistriId: z.string().uuid(),
     notes: z.string().optional(),
 });
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
+
+async function getUserAccountType(userId: string): Promise<'user' | 'mistri' | 'admin' | null> {
+    try {
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, userId)
+        });
+        return user?.accountType || null;
+    } catch (error) {
+        console.error(`Error getting account type for ${userId}:`, error);
+        return null;
+    }
+}
 
 // ============================================
 // CONTROLLER FUNCTIONS
@@ -68,7 +82,7 @@ export const getAllConsultations = async (req: Request, res: Response) => {
 
         const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-        // Get consultations with customer details from userAccounts
+        // ✅ Get consultations with customer details from unified users table
         const consultationList = await db
             .select({
                 id: consultations.id,
@@ -89,17 +103,20 @@ export const getAllConsultations = async (req: Request, res: Response) => {
                 createdAt: consultations.createdAt,
                 updatedAt: consultations.updatedAt,
                 completedAt: consultations.completedAt,
-                customerName: userAccounts.fullName,
-                customerPhone: userAccounts.phoneNumber,
+                customerName: users.fullName,           // ✅ Changed from userAccounts to users
+                customerPhone: users.phoneNumber,       // ✅ Changed from userAccounts to users
             })
             .from(consultations)
-            .leftJoin(userAccounts, eq(consultations.userId, userAccounts.id))
+            .leftJoin(users, and(
+                eq(consultations.userId, users.id),
+                eq(users.accountType, "user")           // ✅ Only customers
+            ))
             .where(whereClause)
             .orderBy(desc(consultations.createdAt))
             .limit(limitNum)
             .offset(offset);
 
-        // Get assigned mistri details from mistriAccounts
+        // ✅ Get assigned mistri details from unified users table
         const consultationsWithMistri = await Promise.all(
             consultationList.map(async (consultation) => {
                 let assignedMistriName = null;
@@ -109,11 +126,14 @@ export const getAllConsultations = async (req: Request, res: Response) => {
                     try {
                         const [mistri] = await db
                             .select({
-                                fullName: mistriAccounts.fullName,
-                                phoneNumber: mistriAccounts.phoneNumber,
+                                fullName: users.fullName,
+                                phoneNumber: users.phoneNumber,
                             })
-                            .from(mistriAccounts)
-                            .where(eq(mistriAccounts.id, consultation.assignedTo))
+                            .from(users)
+                            .where(and(
+                                eq(users.id, consultation.assignedTo),
+                                eq(users.accountType, "mistri")        // ✅ Only mistris
+                            ))
                             .limit(1);
                         
                         if (mistri) {
@@ -191,11 +211,14 @@ export const getConsultationById = async (req: Request, res: Response) => {
                 createdAt: consultations.createdAt,
                 updatedAt: consultations.updatedAt,
                 completedAt: consultations.completedAt,
-                customerName: userAccounts.fullName,
-                customerPhone: userAccounts.phoneNumber,
+                customerName: users.fullName,           // ✅ Changed from userAccounts to users
+                customerPhone: users.phoneNumber,       // ✅ Changed from userAccounts to users
             })
             .from(consultations)
-            .leftJoin(userAccounts, eq(consultations.userId, userAccounts.id))
+            .leftJoin(users, and(
+                eq(consultations.userId, users.id),
+                eq(users.accountType, "user")           // ✅ Only customers
+            ))
             .where(eq(consultations.id, id))
             .limit(1);
 
@@ -206,17 +229,20 @@ export const getConsultationById = async (req: Request, res: Response) => {
             });
         }
 
-        // Get assigned mistri details from mistriAccounts
+        // ✅ Get assigned mistri details from unified users table
         let assignedMistri = null;
         if (consultation.assignedTo) {
             const [mistri] = await db
                 .select({
-                    id: mistriAccounts.id,
-                    fullName: mistriAccounts.fullName,
-                    phoneNumber: mistriAccounts.phoneNumber,
+                    id: users.id,
+                    fullName: users.fullName,
+                    phoneNumber: users.phoneNumber,
                 })
-                .from(mistriAccounts)
-                .where(eq(mistriAccounts.id, consultation.assignedTo))
+                .from(users)
+                .where(and(
+                    eq(users.id, consultation.assignedTo),
+                    eq(users.accountType, "mistri")     // ✅ Only mistris
+                ))
                 .limit(1);
             
             if (mistri) {
@@ -280,15 +306,18 @@ export const assignConsultation = async (req: Request, res: Response) => {
             });
         }
 
-        // Verify mistri exists in mistriAccounts
+        // ✅ Verify mistri exists in unified users table
         const [mistri] = await db
             .select({
-                id: mistriAccounts.id,
-                fullName: mistriAccounts.fullName,
-                phoneNumber: mistriAccounts.phoneNumber,
+                id: users.id,
+                fullName: users.fullName,
+                phoneNumber: users.phoneNumber,
             })
-            .from(mistriAccounts)
-            .where(eq(mistriAccounts.id, mistriId))
+            .from(users)
+            .where(and(
+                eq(users.id, mistriId),
+                eq(users.accountType, "mistri")         // ✅ Only mistris
+            ))
             .limit(1);
 
         if (!mistri) {
@@ -319,7 +348,7 @@ export const assignConsultation = async (req: Request, res: Response) => {
             id
         );
 
-        // Notify customer from userAccounts
+        // ✅ Notify customer from unified users table
         if (consultation.userId) {
             await createNotification(
                 consultation.userId,
@@ -333,8 +362,11 @@ export const assignConsultation = async (req: Request, res: Response) => {
             const shouldSendSms = await shouldSendNotification(consultation.userId, 'consultation', 'sms');
             if (shouldSendSms) {
                 try {
-                    const customer = await db.query.userAccounts.findFirst({
-                        where: eq(userAccounts.id, consultation.userId)
+                    const customer = await db.query.users.findFirst({
+                        where: and(
+                            eq(users.id, consultation.userId),
+                            eq(users.accountType, "user")
+                        )
                     });
                     if (customer?.phoneNumber) {
                         await sendSms(

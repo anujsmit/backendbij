@@ -6,7 +6,6 @@ import helmet from "helmet";
 import compression from "compression";
 import rateLimit from "express-rate-limit";
 import timeout from "connect-timeout";
-// @ts-ignore - express-status-monitor has no types
 import statusMonitor from "express-status-monitor";
 import { networkInterfaces } from "os";
 import { resumeRecentDispatches } from "./services/dispatch";
@@ -19,34 +18,8 @@ import { cacheService } from "./services/cacheService";
 // ROUTE IMPORTS
 // ============================================
 
-// Auth Routes
-import authRoutes from "./routes/auth";
-
-// Admin Routes
-import adminRoutes from "./routes/admin/admin";
-
-// Mistri Routes
-import mistriRoutes from "./routes/mistri";
-
-// User Routes
-import userRoutes from "./routes/auth/userAuth";
-
-// Public Routes
-import publicRoutes from "./routes/public";
-import publicServicesRoutes from "./routes/publicServices";
-
-// Feature Routes
-import serviceRequestRoutes from "./routes/serviceRequest";
-import notificationRoutes from "./routes/notifications";
-import notificationPreferencesRoutes from "./routes/notificationPreferences";
-import servicesRoutes from "./routes/services";
-import platformServicesRoutes from "./routes/platformServices";
-import ratingsRoutes from "./routes/ratings";
-import configRoutes from "./routes/config";
-import heroBannerRoutes from "./routes/heroBanners";
-import orderRoutes from "./routes/orderRoutes";
-import cartRoutes from "./routes/users/cartRoutes";
-import consultationRoutes from "./routes/users/consultationRoutes";
+// ✅ Main router aggregator - all routes are now organized here
+import routes from "./routes";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -154,46 +127,9 @@ app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 // ============================================
-// ROUTES REGISTRATION
+// ROUTES REGISTRATION - CLEAN & ORGANIZED
 // ============================================
-
-// ─── AUTH ROUTES ──────────────────────────
-// Mount auth routes at /api/auth
-// This handles: /api/auth/admin/*, /api/auth/mistri/*, /api/auth/user/*
-app.use("/api/auth", authLimiter, authRoutes);
-
-// ─── ADMIN ROUTES ────────────────────────
-// Mount admin routes at /api/admin
-// All admin routes are protected by authenticateAdmin + requireAdmin middleware
-app.use("/api/admin", adminRoutes);
-
-// ─── MISTRI ROUTES ──────────────────────
-// Mount mistri routes at /api/mistri
-// All mistri routes are protected by authenticateMistri middleware
-app.use("/api/mistri", mistriRoutes);
-
-// ─── USER ROUTES ────────────────────────
-// Mount user routes at /api/user
-// All user routes are protected by authenticateUser middleware
-app.use("/api/user", userRoutes);
-
-// ─── PUBLIC ROUTES ──────────────────────
-// Public routes - no authentication required
-app.use("/api/public", publicRoutes);
-app.use("/api/public", publicServicesRoutes);
-
-// ─── FEATURE ROUTES ──────────────────────
-app.use("/api/service-requests", serviceRequestRoutes);
-app.use("/api/notifications", notificationRoutes);
-app.use("/api/notification-preferences", notificationPreferencesRoutes);
-app.use("/api/services", servicesRoutes);
-app.use("/api/platform-services", platformServicesRoutes);
-app.use("/api/ratings", ratingsRoutes);
-app.use("/api/config", configRoutes);
-app.use("/api/hero-banners", heroBannerRoutes);
-app.use("/api/orders", orderRoutes);
-app.use("/api/cart", cartRoutes);
-app.use("/api/consultations", consultationRoutes);
+app.use("/api", routes);
 
 // ============================================
 // HEALTH CHECK ENDPOINTS

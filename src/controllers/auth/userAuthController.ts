@@ -4,11 +4,9 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { db } from "../../db";
 import { 
-    userAccounts, 
+    users,
     loginAttempts, 
     refreshTokens,
-    users,
-    mistriAccounts,
 } from "../../db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { createOtp, verifyOtp as verifyOtpService, resendOtp } from "../../services/otp";
@@ -19,19 +17,43 @@ import { createAuditLog } from "../../services/auditLog";
 const SALT_ROUNDS = 12;
 
 // ============================================
+// ✅ FIX: Ensure JWT secrets are defined
+// ============================================
+if (!process.env.JWT_SECRET) {
+    console.warn('⚠️ JWT_SECRET not found in environment. Using development fallback.');
+    process.env.JWT_SECRET = 'servexisaserviceproviderin2026';
+}
+
+if (!process.env.JWT_REFRESH_SECRET) {
+    console.warn('⚠️ JWT_REFRESH_SECRET not found in environment. Using development fallback.');
+    process.env.JWT_REFRESH_SECRET = 'servexisaserviceproviderin2026_refresh';
+}
+
+console.log('🔑 JWT_SECRET is', process.env.JWT_SECRET ? '✅ SET' : '❌ MISSING');
+console.log('🔑 JWT_REFRESH_SECRET is', process.env.JWT_REFRESH_SECRET ? '✅ SET' : '❌ MISSING');
+
+// ============================================
 // HELPER FUNCTIONS
 // ============================================
 
 function generateTokens(userId: string, accountType: string) {
+    const secret = process.env.JWT_SECRET;
+    const refreshSecret = process.env.JWT_REFRESH_SECRET;
+    
+    if (!secret || !refreshSecret) {
+        console.error('❌ JWT secrets are missing!');
+        throw new Error('JWT secrets are not configured. Please check your environment variables.');
+    }
+    
     const accessToken = jwt.sign(
         { userId, type: "access", accountType },
-        process.env.JWT_SECRET!,
+        secret,
         { expiresIn: "7d" }
     );
 
     const refreshToken = jwt.sign(
         { userId, type: "refresh", accountType },
-        process.env.JWT_REFRESH_SECRET!,
+        refreshSecret,
         { expiresIn: "30d" }
     );
 
@@ -72,9 +94,9 @@ export const registerUser = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Check if user already exists
-        const existingUser = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.phoneNumber, cleanPhone)
+        // Check if user already exists in unified users table
+        const existingUser = await db.query.users.findFirst({
+            where: eq(users.phoneNumber, cleanPhone)
         });
 
         if (existingUser) {
@@ -84,46 +106,22 @@ export const registerUser = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Check if mistri exists (cross-table check)
-        const existingMistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.phoneNumber, cleanPhone)
-        });
-
-        if (existingMistri) {
-            return res.status(409).json({
-                success: false,
-                message: "This phone number is already registered as a mistri"
-            });
-        }
-
-        // ✅ Check if admin exists (cross-table check)
-        const existingAdmin = await db.query.users.findFirst({
-            where: eq(users.phoneNumber, cleanPhone)
-        });
-
-        if (existingAdmin) {
-            return res.status(409).json({
-                success: false,
-                message: "This phone number is already registered as an admin"
-            });
-        }
-
         // Hash password
         const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
 
-        // ✅ Create user account
-        const [newUser] = await db.insert(userAccounts).values({
+        // Insert into unified users table
+        const [newUser] = await db.insert(users).values({
             phoneNumber: cleanPhone,
             fullName: fullName.trim(),
             passwordHash: hashedPassword,
             accountType: 'user',
             isActive: true,
             isVerified: false,
-            dob: dob || null,
             isOnboarded: false,
+            dob: dob || null,
         }).returning();
 
-        // Generate OTP for verification
+        // Generate OTP
         const otp = await createOtp(cleanPhone, 10 * 60 * 1000, 'user');
         
         if (process.env.NODE_ENV === 'production') {
@@ -145,7 +143,7 @@ export const registerUser = async (req: Request, res: Response) => {
 
         // Create audit log
         await createAuditLog({
-            entityType: "user_account",
+            entityType: "user",
             entityId: newUser.id,
             action: "registration",
             performedBy: newUser.id,
@@ -217,9 +215,12 @@ export const loginUser = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Find user account
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.phoneNumber, cleanPhone)
+        // Find user in unified users table
+        const user = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'user')  // Only user accounts
+            )
         });
 
         if (!user || !user.passwordHash) {
@@ -234,22 +235,6 @@ export const loginUser = async (req: Request, res: Response) => {
             return res.status(401).json({
                 success: false,
                 message: "Invalid credentials"
-            });
-        }
-
-        // ✅ Only allow user/customer role
-        if (user.accountType !== 'user') {
-            await db.insert(loginAttempts).values({
-                phoneNumber: cleanPhone,
-                accountType: 'user',
-                attemptType: 'user_login',
-                success: false,
-                ipAddress,
-                userAgent: userAgent || null,
-            });
-            return res.status(403).json({
-                success: false,
-                message: "Access denied. This endpoint is for users only."
             });
         }
 
@@ -293,9 +278,9 @@ export const loginUser = async (req: Request, res: Response) => {
         });
 
         // Update last login
-        await db.update(userAccounts)
+        await db.update(users)
             .set({ lastLoginAt: new Date() })
-            .where(eq(userAccounts.id, user.id));
+            .where(eq(users.id, user.id));
 
         // Generate tokens
         const { accessToken, refreshToken } = generateTokens(user.id, "user");
@@ -310,7 +295,7 @@ export const loginUser = async (req: Request, res: Response) => {
 
         // Create audit log
         await createAuditLog({
-            entityType: "user_account",
+            entityType: "user",
             entityId: user.id,
             action: "login_success",
             performedBy: user.id,
@@ -330,6 +315,10 @@ export const loginUser = async (req: Request, res: Response) => {
             dob: user.dob,
             deletionScheduledAt: user.deletionScheduledAt,
             hasScheduledDeletion: hasScheduledDeletion,
+            email: user.email,
+            avatarUrl: user.avatarUrl,
+            defaultLocation: user.defaultLocation,
+            preferences: user.preferences,
         };
 
         logger.info(`✅ User login successful: ${cleanPhone}`);
@@ -368,12 +357,15 @@ export const verifyUserOtp = async (req: Request, res: Response) => {
 
         const cleanPhone = normalizePhone(phone);
         
-        // ✅ Verify OTP
+        // Verify OTP
         await verifyOtpService(cleanPhone, otp, 'user');
 
-        // ✅ Find user account
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.phoneNumber, cleanPhone)
+        // Find user in unified users table
+        const user = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'user')
+            )
         });
 
         if (!user) {
@@ -383,25 +375,17 @@ export const verifyUserOtp = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Only allow user accounts
-        if (user.accountType !== 'user') {
-            return res.status(403).json({
-                success: false,
-                message: "Access denied. This endpoint is for users only."
-            });
-        }
-
-        // ✅ Update user as verified
-        await db.update(userAccounts)
+        // Update user as verified
+        await db.update(users)
             .set({ isVerified: true })
-            .where(eq(userAccounts.id, user.id));
+            .where(eq(users.id, user.id));
 
-        // ✅ Generate token
+        // Generate token
         const { accessToken } = generateTokens(user.id, "user");
 
-        // ✅ Create audit log
+        // Create audit log
         await createAuditLog({
-            entityType: "user_account",
+            entityType: "user",
             entityId: user.id,
             action: "otp_verified",
             performedBy: user.id,
@@ -449,9 +433,12 @@ export const resendUserOtp = async (req: Request, res: Response) => {
 
         const cleanPhone = normalizePhone(phone);
 
-        // ✅ Check if user exists
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.phoneNumber, cleanPhone)
+        // Check if user exists
+        const user = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'user')
+            )
         });
 
         if (!user) {
@@ -461,7 +448,7 @@ export const resendUserOtp = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Resend OTP
+        // Resend OTP
         const otp = await resendOtp(cleanPhone, 10 * 60 * 1000, 'user');
 
         if (process.env.NODE_ENV === 'production') {
@@ -500,9 +487,12 @@ export const userForgotPassword = async (req: Request, res: Response) => {
 
         const cleanPhone = normalizePhone(phone);
 
-        // ✅ Check if user exists
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.phoneNumber, cleanPhone)
+        // Check if user exists
+        const user = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'user')
+            )
         });
 
         if (!user) {
@@ -512,14 +502,7 @@ export const userForgotPassword = async (req: Request, res: Response) => {
             });
         }
 
-        if (user.accountType !== 'user') {
-            return res.status(403).json({
-                success: false,
-                message: "Access denied. Password reset is only for users."
-            });
-        }
-
-        // ✅ Generate OTP
+        // Generate OTP
         const otp = await createOtp(cleanPhone, 10 * 60 * 1000, 'user');
 
         if (process.env.NODE_ENV === 'production') {
@@ -558,22 +541,25 @@ export const verifyUserForgotOtp = async (req: Request, res: Response) => {
 
         const cleanPhone = normalizePhone(phone);
 
-        // ✅ Verify user exists
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.phoneNumber, cleanPhone)
+        // Verify user exists
+        const user = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'user')
+            )
         });
 
-        if (!user || user.accountType !== 'user') {
+        if (!user) {
             return res.status(403).json({
                 success: false,
                 message: "Access denied. Only users can reset passwords."
             });
         }
 
-        // ✅ Verify OTP
+        // Verify OTP
         await verifyOtpService(cleanPhone, otp, 'user');
 
-        // ✅ Generate reset token
+        // Generate reset token
         const resetToken = jwt.sign(
             { userId: user.id, type: 'reset', accountType: 'user' },
             process.env.JWT_SECRET!,
@@ -616,7 +602,7 @@ export const resetUserPassword = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Verify token
+        // Verify token
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
             userId: string;
             type: string;
@@ -632,32 +618,35 @@ export const resetUserPassword = async (req: Request, res: Response) => {
 
         const cleanPhone = normalizePhone(phone);
 
-        // ✅ Verify user exists
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.phoneNumber, cleanPhone)
+        // Verify user exists
+        const user = await db.query.users.findFirst({
+            where: and(
+                eq(users.phoneNumber, cleanPhone),
+                eq(users.accountType, 'user')
+            )
         });
 
-        if (!user || user.accountType !== 'user') {
+        if (!user) {
             return res.status(403).json({
                 success: false,
                 message: "Access denied. Only users can reset passwords."
             });
         }
 
-        // ✅ Hash new password
+        // Hash new password
         const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
 
-        // ✅ Update password
-        await db.update(userAccounts)
+        // Update password
+        await db.update(users)
             .set({ passwordHash: hashedPassword })
-            .where(eq(userAccounts.id, user.id));
+            .where(eq(users.id, user.id));
 
-        // ✅ Invalidate all refresh tokens
+        // Invalidate all refresh tokens
         await db.delete(refreshTokens).where(eq(refreshTokens.userId, user.id));
 
-        // ✅ Create audit log
+        // Create audit log
         await createAuditLog({
-            entityType: "user_account",
+            entityType: "user",
             entityId: user.id,
             action: "password_reset",
             performedBy: user.id,
@@ -717,7 +706,7 @@ export const refreshUserToken = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Verify refresh token
+        // Verify refresh token
         const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET!) as {
             userId: string;
             type: string;
@@ -731,7 +720,7 @@ export const refreshUserToken = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Check if token exists in database
+        // Check if token exists in database
         const storedToken = await db.query.refreshTokens.findFirst({
             where: and(
                 eq(refreshTokens.token, refreshToken),
@@ -746,7 +735,7 @@ export const refreshUserToken = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Check if token is expired
+        // Check if token is expired
         if (new Date(storedToken.expiresAt) < new Date()) {
             await db.delete(refreshTokens).where(eq(refreshTokens.token, refreshToken));
             return res.status(403).json({
@@ -755,13 +744,13 @@ export const refreshUserToken = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Generate new tokens
+        // Generate new tokens
         const { accessToken, refreshToken: newRefreshToken } = generateTokens(decoded.userId, "user");
 
-        // ✅ Delete old refresh token
+        // Delete old refresh token
         await db.delete(refreshTokens).where(eq(refreshTokens.token, refreshToken));
 
-        // ✅ Store new refresh token
+        // Store new refresh token
         await db.insert(refreshTokens).values({
             token: newRefreshToken,
             userId: decoded.userId,
@@ -798,9 +787,9 @@ export const getUserProfile = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Find user account
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.id, userId)
+        // Find user in unified users table
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, userId)
         });
 
         if (!user) {
@@ -875,9 +864,9 @@ export const changeUserPassword = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Find user account
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.id, userId)
+        // Find user in unified users table
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, userId)
         });
 
         if (!user || !user.passwordHash) {
@@ -887,7 +876,7 @@ export const changeUserPassword = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Verify current password
+        // Verify current password
         const isValid = await bcrypt.compare(currentPassword, user.passwordHash);
         if (!isValid) {
             return res.status(401).json({
@@ -896,15 +885,15 @@ export const changeUserPassword = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Hash new password
+        // Hash new password
         const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
-        await db.update(userAccounts)
+        await db.update(users)
             .set({ passwordHash: hashedPassword })
-            .where(eq(userAccounts.id, userId));
+            .where(eq(users.id, userId));
 
-        // ✅ Create audit log
+        // Create audit log
         await createAuditLog({
-            entityType: "user_account",
+            entityType: "user",
             entityId: userId,
             action: "password_changed",
             performedBy: userId,
@@ -940,9 +929,9 @@ export const updateUserProfile = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Find user account
-        const user = await db.query.userAccounts.findFirst({
-            where: eq(userAccounts.id, userId)
+        // Find user in unified users table
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, userId)
         });
 
         if (!user) {
@@ -952,17 +941,17 @@ export const updateUserProfile = async (req: Request, res: Response) => {
             });
         }
 
-        // ✅ Build update data
+        // Build update data
         const updateData: any = { updatedAt: new Date() };
         if (fullName) updateData.fullName = fullName.trim();
         if (email) updateData.email = email.trim();
         if (defaultLocation) updateData.defaultLocation = defaultLocation;
         if (preferences) updateData.preferences = preferences;
 
-        // ✅ Update user
-        const [updatedUser] = await db.update(userAccounts)
+        // Update user
+        const [updatedUser] = await db.update(users)
             .set(updateData)
-            .where(eq(userAccounts.id, userId))
+            .where(eq(users.id, userId))
             .returning();
 
         return res.json({
@@ -980,6 +969,7 @@ export const updateUserProfile = async (req: Request, res: Response) => {
                 email: updatedUser.email,
                 defaultLocation: updatedUser.defaultLocation,
                 preferences: updatedUser.preferences,
+                avatarUrl: updatedUser.avatarUrl,
             }
         });
     } catch (error) {

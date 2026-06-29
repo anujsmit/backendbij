@@ -8,8 +8,7 @@ import {
     serviceItems,
     serviceSubCategories,
     services,
-    users,          // Admin users only
-    userAccounts,   // ✅ Customer accounts
+    users,          // ✅ Unified users table
 } from "../../db/schema";
 import { eq, and, inArray, desc } from "drizzle-orm";
 import { z } from "zod";
@@ -58,7 +57,6 @@ async function getOrCreateCart(userId: string): Promise<string> {
  */
 export const getCart = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         if (!userId) {
             return res.status(401).json({ success: false, message: "Unauthorized" });
@@ -137,7 +135,6 @@ export const getCart = async (req: Request, res: Response) => {
  */
 export const addToCart = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         if (!userId) {
             return res.status(401).json({ success: false, message: "Unauthorized" });
@@ -241,7 +238,6 @@ export const addToCart = async (req: Request, res: Response) => {
  */
 export const updateCartItem = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         if (!userId) {
             return res.status(401).json({ success: false, message: "Unauthorized" });
@@ -337,7 +333,6 @@ export const updateCartItem = async (req: Request, res: Response) => {
  */
 export const removeFromCart = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         if (!userId) {
             return res.status(401).json({ success: false, message: "Unauthorized" });
@@ -407,7 +402,6 @@ export const removeFromCart = async (req: Request, res: Response) => {
  */
 export const clearCart = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         if (!userId) {
             return res.status(401).json({ success: false, message: "Unauthorized" });
@@ -456,7 +450,6 @@ export const clearCart = async (req: Request, res: Response) => {
  */
 export const getCartCount = async (req: Request, res: Response) => {
     try {
-        // ✅ FIXED: Use userId from decoded token
         const userId = (req as any).user?.userId;
         if (!userId) {
             return res.status(401).json({ success: false, message: "Unauthorized" });

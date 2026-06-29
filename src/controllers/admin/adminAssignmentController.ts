@@ -3,15 +3,13 @@ import { Request, Response } from "express";
 import { db } from "../../db";
 import { 
   serviceRequests, 
-  userAccounts,      // ✅ Changed from 'users' to 'userAccounts' for customers
-  mistriAccounts,    // ✅ Changed from 'users' to 'mistriAccounts' for mistris
+  users,               // ✅ Unified users table (customers, mistris, admins)
   mistriProfiles, 
   platformServices,
   serviceRequestPlatformServices,
-  users,             // ✅ For admin users
 } from "../../db/schema";
 import { eq, and, desc, sql } from "drizzle-orm";
-import { createNotification } from "../notificationController";
+import { createNotification } from "../users/notificationController";
 import { createAuditLog } from "../../services/auditLog";
 import { sendSms } from "../../services/sms";
 import { shouldSendNotification } from "../../services/notificationPreferences";
@@ -39,11 +37,14 @@ export const getPendingApprovalRequests = async (req: Request, res: Response) =>
         customerNotes: serviceRequests.customerNotes,
         createdAt: serviceRequests.createdAt,
         customerId: serviceRequests.customerId,
-        customerName: userAccounts.fullName,      // ✅ Changed from users to userAccounts
-        customerPhone: userAccounts.phoneNumber,  // ✅ Changed from users to userAccounts
+        customerName: users.fullName,           // ✅ Changed from userAccounts to users
+        customerPhone: users.phoneNumber,       // ✅ Changed from userAccounts to users
       })
       .from(serviceRequests)
-      .innerJoin(userAccounts, eq(serviceRequests.customerId, userAccounts.id))
+      .innerJoin(users, and(
+        eq(serviceRequests.customerId, users.id),
+        eq(users.accountType, "user")           // ✅ Only customers
+      ))
       .where(eq(serviceRequests.status, "pending"))
       .orderBy(desc(serviceRequests.createdAt));
 
@@ -78,12 +79,15 @@ export const getRequestForAssignment = async (req: Request, res: Response) => {
         customerNotes: serviceRequests.customerNotes,
         createdAt: serviceRequests.createdAt,
         customerId: serviceRequests.customerId,
-        customerName: userAccounts.fullName,      // ✅ Changed from users to userAccounts
-        customerPhone: userAccounts.phoneNumber,  // ✅ Changed from users to userAccounts
+        customerName: users.fullName,           // ✅ Changed from userAccounts to users
+        customerPhone: users.phoneNumber,       // ✅ Changed from userAccounts to users
         paymentAmount: serviceRequests.paymentAmount,
       })
       .from(serviceRequests)
-      .innerJoin(userAccounts, eq(serviceRequests.customerId, userAccounts.id))
+      .innerJoin(users, and(
+        eq(serviceRequests.customerId, users.id),
+        eq(users.accountType, "user")           // ✅ Only customers
+      ))
       .where(eq(serviceRequests.id, requestId))
       .limit(1);
 
@@ -165,9 +169,9 @@ export const getAvailableMistrisForAssignment = async (req: Request, res: Respon
     
     let query = db
       .select({
-        id: mistriAccounts.id,                    // ✅ Changed from users.id to mistriAccounts.id
-        fullName: mistriAccounts.fullName,        // ✅ Changed from users.fullName to mistriAccounts.fullName
-        phoneNumber: mistriAccounts.phoneNumber,  // ✅ Changed from users.phoneNumber to mistriAccounts.phoneNumber
+        id: users.id,                           // ✅ Changed from mistriAccounts.id to users.id
+        fullName: users.fullName,               // ✅ Changed from mistriAccounts.fullName to users.fullName
+        phoneNumber: users.phoneNumber,         // ✅ Changed from mistriAccounts.phoneNumber to users.phoneNumber
         serviceId: mistriProfiles.serviceId,
         profilePhotoUrl: mistriProfiles.profilePhotoUrl,
         isAvailable: mistriProfiles.isAvailable,
@@ -175,12 +179,12 @@ export const getAvailableMistrisForAssignment = async (req: Request, res: Respon
         averageRating: mistriProfiles.averageRating,
         jobsCompleted: mistriProfiles.jobsCompleted,
       })
-      .from(mistriAccounts)                       // ✅ Changed from users to mistriAccounts
-      .innerJoin(mistriProfiles, eq(mistriAccounts.id, mistriProfiles.mistriId))
+      .from(users)                               // ✅ Changed from mistriAccounts to users
+      .innerJoin(mistriProfiles, eq(users.id, mistriProfiles.mistriId))
       .where(
         and(
-          eq(mistriAccounts.accountType, "mistri"),  // ✅ Changed from users.role to mistriAccounts.accountType
-          eq(mistriAccounts.isActive, true),         // ✅ Changed from users.isActive to mistriAccounts.isActive
+          eq(users.accountType, "mistri"),       // ✅ Changed from users.role to users.accountType
+          eq(users.isActive, true),              // ✅ Changed from users.isActive (same)
           eq(mistriProfiles.approvalStatus, "approved")
         )
       );
@@ -248,15 +252,18 @@ export const assignMistriToRequest = async (req: Request, res: Response) => {
       });
     }
 
-    // ✅ Get mistri details from mistriAccounts
+    // ✅ Get mistri details from unified users table
     const [mistri] = await db
       .select({
-        id: mistriAccounts.id,
-        fullName: mistriAccounts.fullName,
-        phoneNumber: mistriAccounts.phoneNumber,
+        id: users.id,
+        fullName: users.fullName,
+        phoneNumber: users.phoneNumber,
       })
-      .from(mistriAccounts)
-      .where(and(eq(mistriAccounts.id, mistriId), eq(mistriAccounts.accountType, "mistri")))
+      .from(users)
+      .where(and(
+        eq(users.id, mistriId), 
+        eq(users.accountType, "mistri")
+      ))
       .limit(1);
 
     if (!mistri) {
@@ -286,7 +293,7 @@ export const assignMistriToRequest = async (req: Request, res: Response) => {
         availabilityStatus: "unavailable",
         isAvailable: false,
       })
-      .where(eq(mistriProfiles.mistriId, mistriId));  // ✅ Changed from userId to mistriId
+      .where(eq(mistriProfiles.mistriId, mistriId));
 
     // Notify mistri
     await createNotification(
@@ -297,9 +304,12 @@ export const assignMistriToRequest = async (req: Request, res: Response) => {
       requestId
     );
 
-    // ✅ Get customer from userAccounts
-    const customer = await db.query.userAccounts.findFirst({
-      where: eq(userAccounts.id, request.customerId),
+    // ✅ Get customer from unified users table
+    const customer = await db.query.users.findFirst({
+      where: and(
+        eq(users.id, request.customerId),
+        eq(users.accountType, "user")
+      ),
     });
 
     // Notify customer
@@ -389,9 +399,12 @@ export const rejectPendingRequest = async (req: Request, res: Response) => {
       })
       .where(eq(serviceRequests.id, requestId));
 
-    // ✅ Get customer from userAccounts
-    const customer = await db.query.userAccounts.findFirst({
-      where: eq(userAccounts.id, request.customerId),
+    // ✅ Get customer from unified users table
+    const customer = await db.query.users.findFirst({
+      where: and(
+        eq(users.id, request.customerId),
+        eq(users.accountType, "user")
+      ),
     });
 
     // Notify customer
@@ -443,7 +456,7 @@ export const getAllRequests = async (req: Request, res: Response) => {
       whereCondition = eq(serviceRequests.status, status as any);
     }
 
-    // Get requests with customer and mistri details
+    // Get requests with customer and mistri details from unified users table
     const requests = await db
       .select({
         id: serviceRequests.id,
@@ -454,24 +467,30 @@ export const getAllRequests = async (req: Request, res: Response) => {
         createdAt: serviceRequests.createdAt,
         assignedAt: serviceRequests.assignedAt,
         completedAt: serviceRequests.completedAt,
-        customerName: userAccounts.fullName,      // ✅ Changed from users to userAccounts
-        customerPhone: userAccounts.phoneNumber,  // ✅ Changed from users to userAccounts
+        customerName: users.fullName,           // ✅ Changed from userAccounts to users
+        customerPhone: users.phoneNumber,       // ✅ Changed from userAccounts to users
         assignedMistriId: serviceRequests.assignedMistriId,
       })
       .from(serviceRequests)
-      .innerJoin(userAccounts, eq(serviceRequests.customerId, userAccounts.id))
+      .innerJoin(users, and(
+        eq(serviceRequests.customerId, users.id),
+        eq(users.accountType, "user")           // ✅ Only customers
+      ))
       .where(whereCondition)
       .orderBy(desc(serviceRequests.createdAt))
       .limit(limitNum)
       .offset(offset);
 
-    // Get mistri names from mistriAccounts
+    // Get mistri names from unified users table
     const requestsWithMistri = await Promise.all(
       requests.map(async (request) => {
         let mistriName = null;
         if (request.assignedMistriId) {
-          const mistri = await db.query.mistriAccounts.findFirst({
-            where: eq(mistriAccounts.id, request.assignedMistriId!),
+          const mistri = await db.query.users.findFirst({
+            where: and(
+              eq(users.id, request.assignedMistriId!),
+              eq(users.accountType, "mistri")
+            ),
           });
           mistriName = mistri?.fullName || null;
         }
@@ -526,12 +545,15 @@ export const getPendingRequestDetails = async (req: Request, res: Response) => {
         customerNotes: serviceRequests.customerNotes,
         createdAt: serviceRequests.createdAt,
         customerId: serviceRequests.customerId,
-        customerName: userAccounts.fullName,      // ✅ Changed from users to userAccounts
-        customerPhone: userAccounts.phoneNumber,  // ✅ Changed from users to userAccounts
+        customerName: users.fullName,           // ✅ Changed from userAccounts to users
+        customerPhone: users.phoneNumber,       // ✅ Changed from userAccounts to users
         paymentAmount: serviceRequests.paymentAmount,
       })
       .from(serviceRequests)
-      .innerJoin(userAccounts, eq(serviceRequests.customerId, userAccounts.id))
+      .innerJoin(users, and(
+        eq(serviceRequests.customerId, users.id),
+        eq(users.accountType, "user")           // ✅ Only customers
+      ))
       .where(eq(serviceRequests.id, requestId))
       .limit(1);
 

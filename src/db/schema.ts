@@ -23,9 +23,7 @@ import { relations } from "drizzle-orm";
 // ENUMS
 // ============================================
 
-export const userRoleEnum = pgEnum("user_role", ["admin"]);
 export const accountTypeEnum = pgEnum("account_type", ["user", "mistri", "admin"]);
-export const serviceTypeEnum = pgEnum("service_type", ["electrician", "plumber"]);
 export const locationSourceEnum = pgEnum("location_source", ["gps", "drag", "admin_manual"]);
 export const serviceRequestStatusEnum = pgEnum("service_request_status", [
   "pending",
@@ -72,123 +70,91 @@ export const commissionStatusEnum = pgEnum("commission_status", [
   "paid",
   "cancelled"
 ]);
+export const auditRoleEnum = pgEnum("audit_role", ["user", "mistri", "admin"]);
 
 // ============================================
-// ADMIN TABLE (Only admins)
+// SINGLE UNIFIED USERS TABLE
 // ============================================
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   phoneNumber: varchar("phone_number", { length: 20 }).unique().notNull(),
   fullName: varchar("full_name", { length: 255 }).notNull(),
-  role: userRoleEnum("role").notNull().default("admin"),
+  accountType: accountTypeEnum("account_type").default("user").notNull(),
   isActive: boolean("is_active").default(true).notNull(),
-  deviceToken: text("device_token"),
+  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  avatarUrl: text("avatar_url"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  isOnboarded: boolean("is_onboarded").default(true).notNull(),
+  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+  deviceToken: text("device_token"),
+  isVerified: boolean("is_verified").default(false).notNull(),
+  dob: varchar("dob", { length: 20 }),
+  isOnboarded: boolean("is_onboarded").default(false).notNull(),
   onboardingCompletedAt: timestamp("onboarding_completed_at", { withTimezone: true }),
   roleSelectedAt: timestamp("role_selected_at", { withTimezone: true }),
   defaultLocation: text("default_location"),
+  deletionScheduledAt: timestamp("deletion_scheduled_at", { withTimezone: true }),
   isFlagged: boolean("is_flagged").default(false),
   flagNote: text("flag_note"),
-  avatarUrl: text("avatar_url"),
-  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
-  isVerified: boolean("is_verified").default(true).notNull(),
-  dob: varchar("dob", { length: 20 }),
-  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
-  twoFaSecret: varchar("two_fa_secret", { length: 255 }),
-  twoFaEnabled: boolean("two_fa_enabled").default(false),
-  twoFaBackupCodes: text("two_fa_backup_codes").array(),
-  deletionScheduledAt: timestamp("deletion_scheduled_at", { withTimezone: true }),
+  email: varchar("email", { length: 255 }),
+  preferences: jsonb("preferences").default({}),
 }, (table) => ({
-  phoneIdx: index("idx_users_phone").on(table.phoneNumber),
-  roleIdx: index("idx_users_role").on(table.role),
+  phoneIdx: index("idx_users_phone_number").on(table.phoneNumber),
+  accountTypeIdx: index("idx_users_account_type").on(table.accountType),
   isActiveIdx: index("idx_users_is_active").on(table.isActive),
+  isOnboardedIdx: index("idx_users_is_onboarded").on(table.isOnboarded),
+  isVerifiedIdx: index("idx_users_is_verified").on(table.isVerified),
   isFlaggedIdx: index("idx_users_is_flagged").on(table.isFlagged),
   deletionScheduledAtIdx: index("idx_users_deletion_scheduled_at").on(table.deletionScheduledAt),
 }));
 
 // ============================================
-// USER ACCOUNTS TABLE (Customers)
+// MISTRI PROFILES (Additional mistri-specific data)
 // ============================================
 
-export const userAccounts = pgTable("user_accounts", {
-  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  phoneNumber: varchar("phone_number", { length: 20 }).unique().notNull(),
-  fullName: varchar("full_name", { length: 255 }).notNull(),
-  accountType: accountTypeEnum("account_type").default("user").notNull(),
-  isActive: boolean("is_active").default(true).notNull(),
-  deviceToken: text("device_token"),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  isOnboarded: boolean("is_onboarded").default(false).notNull(),
-  onboardingCompletedAt: timestamp("onboarding_completed_at", { withTimezone: true }),
-  roleSelectedAt: timestamp("role_selected_at", { withTimezone: true }),
-  defaultLocation: text("default_location"),
-  isFlagged: boolean("is_flagged").default(false),
-  flagNote: text("flag_note"),
-  avatarUrl: text("avatar_url"),
-  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
-  isVerified: boolean("is_verified").default(false).notNull(),
-  dob: varchar("dob", { length: 20 }),
-  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
-  twoFaSecret: varchar("two_fa_secret", { length: 255 }),
-  twoFaEnabled: boolean("two_fa_enabled").default(false),
-  twoFaBackupCodes: text("two_fa_backup_codes").array(),
-  deletionScheduledAt: timestamp("deletion_scheduled_at", { withTimezone: true }),
-  email: varchar("email", { length: 255 }),
-  preferences: jsonb("preferences").default({}),
+export const mistriProfiles = pgTable("mistri_profiles", {
+  mistriId: uuid("mistri_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  serviceId: integer("service_id").notNull().references(() => services.id),
+  profilePhotoUrl: text("profile_photo_url"),
+  bio: text("bio"),
+  isAvailable: boolean("is_available").default(true).notNull(),
+  availabilityStatus: availabilityStatusEnum("availability_status").default("available").notNull(),
+  isFeatured: boolean("is_featured").default(false).notNull(),
+  currentLocation: text("current_location"),
+  averageRating: decimal("average_rating", { precision: 3, scale: 2 }).default("0.00"),
+  jobsCompleted: integer("jobs_completed").default(0),
+  experienceLevel: varchar("experience_level", { length: 50 }),
+  govtIdType: varchar("govt_id_type", { length: 50 }),
+  govtIdFrontUrl: text("govt_id_front_url"),
+  govtIdBackUrl: text("govt_id_back_url"),
+  approvalStatus: mistriApprovalStatusEnum("approval_status").default("pending").notNull(),
+  approvalRejectionReason: text("approval_rejection_reason"),
 }, (table) => ({
-  phoneIdx: index("idx_user_accounts_phone").on(table.phoneNumber),
-  isActiveIdx: index("idx_user_accounts_is_active").on(table.isActive),
-  isOnboardedIdx: index("idx_user_accounts_is_onboarded").on(table.isOnboarded),
-  isVerifiedIdx: index("idx_user_accounts_is_verified").on(table.isVerified),
-  isFlaggedIdx: index("idx_user_accounts_is_flagged").on(table.isFlagged),
-  deletionScheduledAtIdx: index("idx_user_accounts_deletion_scheduled_at").on(table.deletionScheduledAt),
+  serviceIdIdx: index("idx_mistri_profiles_service_id").on(table.serviceId),
+  isAvailableIdx: index("idx_mistri_profiles_is_available").on(table.isAvailable),
+  isFeaturedIdx: index("idx_mistri_profiles_is_featured").on(table.isFeatured),
+  approvalStatusIdx: index("idx_mistri_profiles_approval_status").on(table.approvalStatus),
 }));
 
 // ============================================
-// MISTRI ACCOUNTS TABLE (Service Providers)
+// EMPLOYEE PROFILES (Admin/Employee specific data)
 // ============================================
 
-export const mistriAccounts = pgTable("mistri_accounts", {
-  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  phoneNumber: varchar("phone_number", { length: 20 }).unique().notNull(),
-  fullName: varchar("full_name", { length: 255 }).notNull(),
-  accountType: accountTypeEnum("account_type").default("mistri").notNull(),
-  isActive: boolean("is_active").default(true).notNull(),
-  deviceToken: text("device_token"),
+export const employeeProfiles = pgTable("employee_profiles", {
+  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  staffRole: staffRoleEnum("staff_role").default("support").notNull(),
+  permissions: jsonb("permissions").$type<string[]>().default([]).notNull(),
+  designation: varchar("designation", { length: 100 }),
+  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-  isOnboarded: boolean("is_onboarded").default(false).notNull(),
-  onboardingCompletedAt: timestamp("onboarding_completed_at", { withTimezone: true }),
-  roleSelectedAt: timestamp("role_selected_at", { withTimezone: true }),
-  defaultLocation: text("default_location"),
-  isFlagged: boolean("is_flagged").default(false),
-  flagNote: text("flag_note"),
-  avatarUrl: text("avatar_url"),
-  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
-  isVerified: boolean("is_verified").default(false).notNull(),
-  dob: varchar("dob", { length: 20 }),
-  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
-  twoFaSecret: varchar("two_fa_secret", { length: 255 }),
-  twoFaEnabled: boolean("two_fa_enabled").default(false),
-  twoFaBackupCodes: text("two_fa_backup_codes").array(),
-  deletionScheduledAt: timestamp("deletion_scheduled_at", { withTimezone: true }),
-  email: varchar("email", { length: 255 }),
-  preferences: jsonb("preferences").default({}),
 }, (table) => ({
-  phoneIdx: index("idx_mistri_accounts_phone").on(table.phoneNumber),
-  isActiveIdx: index("idx_mistri_accounts_is_active").on(table.isActive),
-  isOnboardedIdx: index("idx_mistri_accounts_is_onboarded").on(table.isOnboarded),
-  isVerifiedIdx: index("idx_mistri_accounts_is_verified").on(table.isVerified),
-  isFlaggedIdx: index("idx_mistri_accounts_is_flagged").on(table.isFlagged),
-  deletionScheduledAtIdx: index("idx_mistri_accounts_deletion_scheduled_at").on(table.deletionScheduledAt),
+  staffRoleIdx: index("employee_profiles_staff_role_idx").on(table.staffRole),
 }));
 
 // ============================================
-// LOGIN ATTEMPTS (Updated with account_type)
+// AUTHENTICATION TABLES
 // ============================================
 
 export const loginAttempts = pgTable("login_attempts", {
@@ -208,12 +174,6 @@ export const loginAttempts = pgTable("login_attempts", {
   createdAtIdx: index("idx_login_attempts_created_at").on(table.createdAt),
 }));
 
-// ============================================
-// OTPS (Updated with account_type)
-// ============================================
-
-// backend/src/db/schema.ts
-
 export const otps = pgTable("otps", {
   id: serial("id").primaryKey(),
   phone: varchar("phone", { length: 256 }).notNull(),
@@ -228,10 +188,6 @@ export const otps = pgTable("otps", {
   expiresAtIdx: index("idx_otps_expires_at").on(table.expiresAt),
 }));
 
-// ============================================
-// REFRESH TOKENS (Updated with account_type)
-// ============================================
-
 export const refreshTokens = pgTable("refresh_tokens", {
   token: text("token").primaryKey(),
   userId: uuid("user_id").notNull(),
@@ -244,8 +200,22 @@ export const refreshTokens = pgTable("refresh_tokens", {
   accountTypeIdx: index("refresh_tokens_account_type_idx").on(table.accountType),
 }));
 
+export const phoneChangeAttempts = pgTable("phone_change_attempts", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: uuid("user_id").notNull(),
+  accountType: accountTypeEnum("account_type").notNull(),
+  oldPhoneNumber: varchar("old_phone_number", { length: 20 }),
+  newPhoneNumber: varchar("new_phone_number", { length: 20 }).notNull(),
+  status: varchar("status", { length: 20 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  userIdIdx: index("phone_change_attempts_user_id_idx").on(table.userId),
+  accountTypeIdx: index("phone_change_attempts_account_type_idx").on(table.accountType),
+  createdAtIdx: index("phone_change_attempts_created_at_idx").on(table.createdAt),
+}));
+
 // ============================================
-// LEVEL 1: SERVICE CATEGORIES
+// SERVICE CATEGORIES HIERARCHY
 // ============================================
 
 export const serviceCategories = pgTable("service_categories", {
@@ -262,10 +232,6 @@ export const serviceCategories = pgTable("service_categories", {
   isActiveIdx: index("idx_service_categories_is_active").on(table.isActive),
   displayOrderIdx: index("idx_service_categories_display_order").on(table.displayOrder),
 }));
-
-// ============================================
-// LEVEL 2: SERVICE SUB-CATEGORIES
-// ============================================
 
 export const serviceSubCategories = pgTable("service_sub_categories", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -284,10 +250,6 @@ export const serviceSubCategories = pgTable("service_sub_categories", {
   isActiveIdx: index("idx_service_sub_categories_is_active").on(table.isActive),
   isPopularIdx: index("idx_service_sub_categories_is_popular").on(table.isPopular),
 }));
-
-// ============================================
-// LEVEL 3: SERVICE ITEMS
-// ============================================
 
 export const serviceItems = pgTable("service_items", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -348,46 +310,18 @@ export const platformServices = pgTable("platform_services", {
 }));
 
 // ============================================
-// MISTRI PROFILES (Updated to use mistri_id)
-// ============================================
-
-export const mistriProfiles = pgTable("mistri_profiles", {
-  mistriId: uuid("mistri_id").primaryKey().references(() => mistriAccounts.id, { onDelete: "cascade" }),
-  serviceId: integer("service_id").notNull().references(() => services.id),
-  profilePhotoUrl: text("profile_photo_url"),
-  bio: text("bio"),
-  isAvailable: boolean("is_available").default(true).notNull(),
-  availabilityStatus: availabilityStatusEnum("availability_status").default("available").notNull(),
-  isFeatured: boolean("is_featured").default(false).notNull(),
-  currentLocation: text("current_location"),
-  averageRating: decimal("average_rating", { precision: 3, scale: 2 }).default("0.00"),
-  jobsCompleted: integer("jobs_completed").default(0),
-  experienceLevel: varchar("experience_level", { length: 50 }),
-  govtIdType: varchar("govt_id_type", { length: 50 }),
-  govtIdFrontUrl: text("govt_id_front_url"),
-  govtIdBackUrl: text("govt_id_back_url"),
-  approvalStatus: mistriApprovalStatusEnum("approval_status").default("pending").notNull(),
-  approvalRejectionReason: text("approval_rejection_reason"),
-}, (table) => ({
-  serviceIdIdx: index("idx_mistri_profiles_service_id").on(table.serviceId),
-  isAvailableIdx: index("idx_mistri_profiles_is_available").on(table.isAvailable),
-  isFeaturedIdx: index("idx_mistri_profiles_is_featured").on(table.isFeatured),
-  approvalStatusIdx: index("idx_mistri_profiles_approval_status").on(table.approvalStatus),
-}));
-
-// ============================================
-// SERVICE REQUESTS (Updated references)
+// SERVICE REQUESTS
 // ============================================
 
 export const serviceRequests = pgTable("service_requests", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  customerId: uuid("customer_id").notNull().references(() => userAccounts.id, { onDelete: "cascade" }),
+  customerId: uuid("customer_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   type: varchar("type", { length: 100 }).notNull(),
   lat: decimal("lat", { precision: 10, scale: 6 }).notNull(),
   lng: decimal("lng", { precision: 10, scale: 6 }).notNull(),
   address: text("address").notNull(),
   source: locationSourceEnum("source").notNull(),
-  assignedMistriId: uuid("assigned_mistri_id").references(() => mistriAccounts.id, { onDelete: "set null" }),
+  assignedMistriId: uuid("assigned_mistri_id").references(() => users.id, { onDelete: "set null" }),
   status: serviceRequestStatusEnum("status").default("pending").notNull(),
   customerNotes: text("customer_notes"),
   adminNotes: text("admin_notes"),
@@ -411,10 +345,6 @@ export const serviceRequests = pgTable("service_requests", {
   commissionIdIdx: index("service_requests_commission_id_idx").on(table.commissionId),
 }));
 
-// ============================================
-// SERVICE REQUEST PLATFORM SERVICES (Junction)
-// ============================================
-
 export const serviceRequestPlatformServices = pgTable("service_request_platform_services", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   serviceRequestId: uuid("service_request_id").notNull().references(() => serviceRequests.id, { onDelete: "cascade" }),
@@ -426,12 +356,12 @@ export const serviceRequestPlatformServices = pgTable("service_request_platform_
 }));
 
 // ============================================
-// MISTRI COMMISSIONS (Updated references)
+// MISTRI COMMISSIONS
 // ============================================
 
 export const mistriCommissions = pgTable("mistri_commissions", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  mistriId: uuid("mistri_id").notNull().references(() => mistriAccounts.id, { onDelete: "cascade" }),
+  mistriId: uuid("mistri_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   serviceRequestId: uuid("service_request_id").notNull().references(() => serviceRequests.id, { onDelete: "cascade" }),
   jobAmount: decimal("job_amount", { precision: 10, scale: 2 }).notNull(),
   commissionRate: decimal("commission_rate", { precision: 5, scale: 2 }).notNull(),
@@ -452,14 +382,14 @@ export const mistriCommissions = pgTable("mistri_commissions", {
 }));
 
 // ============================================
-// RATINGS (Updated references)
+// RATINGS
 // ============================================
 
 export const ratings = pgTable("ratings", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   serviceRequestId: uuid("service_request_id").notNull().unique().references(() => serviceRequests.id, { onDelete: "cascade" }),
-  customerId: uuid("customer_id").notNull().references(() => userAccounts.id, { onDelete: "cascade" }),
-  mistriId: uuid("mistri_id").notNull().references(() => mistriAccounts.id, { onDelete: "cascade" }),
+  customerId: uuid("customer_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  mistriId: uuid("mistri_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   rating: integer("rating").notNull(),
   review: text("review"),
   isApproved: boolean("is_approved").default(false).notNull(),
@@ -476,7 +406,7 @@ export const ratings = pgTable("ratings", {
 }));
 
 // ============================================
-// NOTIFICATIONS (Updated with account_type)
+// NOTIFICATIONS
 // ============================================
 
 export const notifications = pgTable("notifications", {
@@ -496,10 +426,6 @@ export const notifications = pgTable("notifications", {
   createdAtIdx: index("idx_notifications_created_at").on(table.createdAt),
 }));
 
-// ============================================
-// NOTIFICATION PREFERENCES (Updated with account_type)
-// ============================================
-
 export const notificationPreferences = pgTable("notification_preferences", {
   userId: uuid("user_id").primaryKey(),
   accountType: accountTypeEnum("account_type").notNull(),
@@ -514,10 +440,6 @@ export const notificationPreferences = pgTable("notification_preferences", {
   accountTypeIdx: index("idx_notification_preferences_account_type").on(table.accountType),
 }));
 
-// ============================================
-// SMS LOGS
-// ============================================
-
 export const smsLogs = pgTable("sms_logs", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   to: varchar("to", { length: 20 }).notNull(),
@@ -531,33 +453,9 @@ export const smsLogs = pgTable("sms_logs", {
 }));
 
 // ============================================
-// PHONE CHANGE ATTEMPTS
+// ADMINISTRATIVE & FINANCE
 // ============================================
 
-export const phoneChangeAttempts = pgTable("phone_change_attempts", {
-  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: uuid("user_id").notNull(),
-  accountType: accountTypeEnum("account_type").notNull(),
-  oldPhoneNumber: varchar("old_phone_number", { length: 20 }),
-  newPhoneNumber: varchar("new_phone_number", { length: 20 }).notNull(),
-  status: varchar("status", { length: 20 }).notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => ({
-  userIdIdx: index("phone_change_attempts_user_id_idx").on(table.userId),
-  accountTypeIdx: index("phone_change_attempts_account_type_idx").on(table.accountType),
-  createdAtIdx: index("phone_change_attempts_created_at_idx").on(table.createdAt),
-}));
-
-// ============================================
-// AUDIT LOGS
-// ============================================
-
-// backend/src/db/schema.ts
-
-// Add a new enum for audit log roles
-export const auditRoleEnum = pgEnum("audit_role", ["user", "mistri", "admin"]);
-
-// Update the auditLogs table
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   entityType: varchar("entity_type", { length: 50 }).notNull(),
@@ -575,10 +473,6 @@ export const auditLogs = pgTable("audit_logs", {
   performedByIdx: index("audit_logs_performed_by_idx").on(table.performedBy),
   createdAtIdx: index("audit_logs_created_at_idx").on(table.createdAt),
 }));
-
-// ============================================
-// HERO BANNERS
-// ============================================
 
 export const heroBanners = pgTable("hero_banners", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -598,10 +492,6 @@ export const heroBanners = pgTable("hero_banners", {
   adTypeIdx: index("hero_banners_ad_type_idx").on(table.adType),
 }));
 
-// ============================================
-// EXPENSES
-// ============================================
-
 export const expenses = pgTable("expenses", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   title: varchar("title", { length: 255 }).notNull(),
@@ -620,23 +510,15 @@ export const expenses = pgTable("expenses", {
   createdAtIdx: index("expenses_created_at_idx").on(table.createdAt),
 }));
 
-// ============================================
-// APP SETTINGS
-// ============================================
-
 export const appSettings = pgTable("app_settings", {
   key: varchar("key", { length: 64 }).primaryKey(),
   value: text("value").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
 
-// ============================================
-// PAYOUTS (Updated references)
-// ============================================
-
 export const payouts = pgTable("payouts", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  mistriId: uuid("mistri_id").notNull().references(() => mistriAccounts.id, { onDelete: "cascade" }),
+  mistriId: uuid("mistri_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   jobsCount: integer("jobs_count").notNull(),
   grossAmount: decimal("gross_amount", { precision: 12, scale: 2 }).notNull(),
   commissionRate: decimal("commission_rate", { precision: 5, scale: 2 }).notNull(),
@@ -655,29 +537,13 @@ export const payouts = pgTable("payouts", {
 }));
 
 // ============================================
-// EMPLOYEE PROFILES
-// ============================================
-
-export const employeeProfiles = pgTable("employee_profiles", {
-  userId: uuid("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
-  staffRole: staffRoleEnum("staff_role").default("support").notNull(),
-  permissions: jsonb("permissions").$type<string[]>().default([]).notNull(),
-  designation: varchar("designation", { length: 100 }),
-  createdBy: uuid("created_by").references(() => users.id, { onDelete: "set null" }),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => ({
-  staffRoleIdx: index("employee_profiles_staff_role_idx").on(table.staffRole),
-}));
-
-// ============================================
-// ORDERS SYSTEM (Updated references)
+// ORDERS SYSTEM
 // ============================================
 
 export const orders = pgTable("orders", {
   id: uuid("id").defaultRandom().primaryKey(),
-  customerId: uuid("customer_id").notNull().references(() => userAccounts.id, { onDelete: "cascade" }),
-  assignedMistriId: uuid("assigned_mistri_id").references(() => mistriAccounts.id),
+  customerId: uuid("customer_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  assignedMistriId: uuid("assigned_mistri_id").references(() => users.id),
   serviceRequestId: uuid("service_request_id").references(() => serviceRequests.id),
   status: orderStatusEnum("status").default("pending").notNull(),
   paymentStatus: paymentStatusEnum("payment_status").default("pending"),
@@ -710,10 +576,6 @@ export const orders = pgTable("orders", {
   createdAtIdx: index("idx_orders_created_at").on(table.createdAt),
 }));
 
-// ============================================
-// ORDER ITEMS
-// ============================================
-
 export const orderItems = pgTable("order_items", {
   id: uuid("id").defaultRandom().primaryKey(),
   orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
@@ -731,10 +593,6 @@ export const orderItems = pgTable("order_items", {
   orderIdIdx: index("idx_order_items_order_id").on(table.orderId),
 }));
 
-// ============================================
-// ORDER TIMELINE
-// ============================================
-
 export const orderTimeline = pgTable("order_timeline", {
   id: uuid("id").defaultRandom().primaryKey(),
   orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
@@ -746,16 +604,12 @@ export const orderTimeline = pgTable("order_timeline", {
   orderIdIdx: index("idx_order_timeline_order_id").on(table.orderId),
 }));
 
-// ============================================
-// SUB-ORDERS (Updated references)
-// ============================================
-
 export const subOrders = pgTable("sub_orders", {
   id: uuid("id").defaultRandom().primaryKey(),
   orderId: uuid("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
   categoryId: integer("category_id").notNull().references(() => services.id),
   categoryName: varchar("category_name", { length: 100 }).notNull(),
-  assignedMistriId: uuid("assigned_mistri_id").references(() => mistriAccounts.id),
+  assignedMistriId: uuid("assigned_mistri_id").references(() => users.id),
   status: orderStatusEnum("status").default("pending").notNull(),
   subtotal: decimal("subtotal", { precision: 10, scale: 2 }).notNull(),
   tax: decimal("tax", { precision: 10, scale: 2 }).default("0"),
@@ -771,10 +625,6 @@ export const subOrders = pgTable("sub_orders", {
   assignedMistriIdIdx: index("idx_sub_orders_assigned_mistri_id").on(table.assignedMistriId),
   statusIdx: index("idx_sub_orders_status").on(table.status),
 }));
-
-// ============================================
-// SUB-ORDER ITEMS
-// ============================================
 
 export const subOrderItems = pgTable("sub_order_items", {
   id: uuid("id").defaultRandom().primaryKey(),
@@ -793,10 +643,6 @@ export const subOrderItems = pgTable("sub_order_items", {
   subOrderIdIdx: index("idx_sub_order_items_sub_order_id").on(table.subOrderId),
 }));
 
-// ============================================
-// SUB-ORDER TIMELINE
-// ============================================
-
 export const subOrderTimeline = pgTable("sub_order_timeline", {
   id: uuid("id").defaultRandom().primaryKey(),
   subOrderId: uuid("sub_order_id").notNull().references(() => subOrders.id, { onDelete: "cascade" }),
@@ -809,12 +655,12 @@ export const subOrderTimeline = pgTable("sub_order_timeline", {
 }));
 
 // ============================================
-// CART SYSTEM (Updated references)
+// CART SYSTEM
 // ============================================
 
 export const carts = pgTable("carts", {
   id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id").notNull().references(() => userAccounts.id, { onDelete: "cascade" }),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => ({
@@ -835,12 +681,13 @@ export const cartItems = pgTable("cart_items", {
 }));
 
 // ============================================
-// CONSULTATIONS (Updated references)
+// CONSULTATIONS
 // ============================================
 
 export const consultations = pgTable("consultations", {
   id: uuid("id").defaultRandom().primaryKey(),
-  userId: uuid("user_id").references(() => userAccounts.id, { onDelete: "set null" }),
+  userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+  mistriId: uuid("mistri_id").references(() => users.id, { onDelete: "set null" }),
   categoryId: integer("category_id").notNull(),
   categoryName: text("category_name").notNull(),
   location: text("location").notNull(),
@@ -851,7 +698,7 @@ export const consultations = pgTable("consultations", {
   preferredTime: text("preferred_time"),
   urgency: text("urgency").default("normal").notNull(),
   status: text("status").default("pending").notNull(),
-  assignedTo: uuid("assigned_to").references(() => mistriAccounts.id, { onDelete: "set null" }),
+  assignedTo: uuid("assigned_to").references(() => users.id, { onDelete: "set null" }),
   notes: text("notes"),
   adminNotes: text("admin_notes"),
   metadata: jsonb("metadata"),
@@ -860,6 +707,7 @@ export const consultations = pgTable("consultations", {
   completedAt: timestamp("completed_at"),
 }, (table) => ({
   userIdIdx: index("idx_consultations_user_id").on(table.userId),
+  mistriIdIdx: index("idx_consultations_mistri_id").on(table.mistriId),
   statusIdx: index("idx_consultations_status").on(table.status),
   categoryIdIdx: index("idx_consultations_category_id").on(table.categoryId),
   assignedToIdx: index("idx_consultations_assigned_to").on(table.assignedTo),
@@ -871,58 +719,53 @@ export const consultations = pgTable("consultations", {
 // RELATIONS
 // ============================================
 
-// Service Categories Relations
-export const serviceCategoriesRelations = relations(serviceCategories, ({ many }) => ({
-  subCategories: many(serviceSubCategories),
+export const usersRelations = relations(users, ({ many }) => ({
+  mistriProfile: many(mistriProfiles),
+  employeeProfile: many(employeeProfiles),
+  serviceRequests: many(serviceRequests),
+  orders: many(orders),
+  consultations: many(consultations),
+  ratings: many(ratings),
 }));
 
-// Service Sub-Categories Relations
-export const serviceSubCategoriesRelations = relations(serviceSubCategories, ({ one, many }) => ({
-  category: one(serviceCategories, {
-    fields: [serviceSubCategories.categoryId],
-    references: [serviceCategories.id],
-  }),
-  items: many(serviceItems),
-}));
-
-// Service Items Relations
-export const serviceItemsRelations = relations(serviceItems, ({ one }) => ({
-  subCategory: one(serviceSubCategories, {
-    fields: [serviceItems.subCategoryId],
-    references: [serviceSubCategories.id],
-  }),
-}));
-
-// Mistri Profiles Relations
 export const mistriProfilesRelations = relations(mistriProfiles, ({ one }) => ({
-  mistri: one(mistriAccounts, {
+  mistri: one(users, {
     fields: [mistriProfiles.mistriId],
-    references: [mistriAccounts.id],
+    references: [users.id],
+  }),
+  service: one(services, {
+    fields: [mistriProfiles.serviceId],
+    references: [services.id],
   }),
 }));
 
-// Service Requests Relations
-export const serviceRequestsRelations = relations(serviceRequests, ({ one, many }) => ({
-  customer: one(userAccounts, {
-    fields: [serviceRequests.customerId],
-    references: [userAccounts.id],
+export const employeeProfilesRelations = relations(employeeProfiles, ({ one }) => ({
+  user: one(users, {
+    fields: [employeeProfiles.userId],
+    references: [users.id],
   }),
-  assignedMistri: one(mistriAccounts, {
+}));
+
+export const serviceRequestsRelations = relations(serviceRequests, ({ one, many }) => ({
+  customer: one(users, {
+    fields: [serviceRequests.customerId],
+    references: [users.id],
+  }),
+  assignedMistri: one(users, {
     fields: [serviceRequests.assignedMistriId],
-    references: [mistriAccounts.id],
+    references: [users.id],
   }),
   platformServices: many(serviceRequestPlatformServices),
 }));
 
-// Orders Relations
 export const ordersRelations = relations(orders, ({ one, many }) => ({
-  customer: one(userAccounts, {
+  customer: one(users, {
     fields: [orders.customerId],
-    references: [userAccounts.id],
+    references: [users.id],
   }),
-  assignedMistri: one(mistriAccounts, {
+  assignedMistri: one(users, {
     fields: [orders.assignedMistriId],
-    references: [mistriAccounts.id],
+    references: [users.id],
   }),
   serviceRequest: one(serviceRequests, {
     fields: [orders.serviceRequestId],
@@ -933,62 +776,18 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
   timeline: many(orderTimeline),
 }));
 
-// Order Items Relations
-export const orderItemsRelations = relations(orderItems, ({ one }) => ({
-  order: one(orders, {
-    fields: [orderItems.orderId],
-    references: [orders.id],
-  }),
-  serviceItem: one(serviceItems, {
-    fields: [orderItems.serviceItemId],
-    references: [serviceItems.id],
-  }),
-}));
-
-// Sub-Orders Relations
-export const subOrdersRelations = relations(subOrders, ({ one, many }) => ({
-  order: one(orders, {
-    fields: [subOrders.orderId],
-    references: [orders.id],
-  }),
-  assignedMistri: one(mistriAccounts, {
-    fields: [subOrders.assignedMistriId],
-    references: [mistriAccounts.id],
-  }),
-  items: many(subOrderItems),
-  timeline: many(subOrderTimeline),
-}));
-
-// Cart Relations
-export const cartsRelations = relations(carts, ({ one, many }) => ({
-  user: one(userAccounts, {
-    fields: [carts.userId],
-    references: [userAccounts.id],
-  }),
-  items: many(cartItems),
-}));
-
-// Cart Items Relations
-export const cartItemsRelations = relations(cartItems, ({ one }) => ({
-  cart: one(carts, {
-    fields: [cartItems.cartId],
-    references: [carts.id],
-  }),
-  serviceItem: one(serviceItems, {
-    fields: [cartItems.serviceItemId],
-    references: [serviceItems.id],
-  }),
-}));
-
-// Consultations Relations
 export const consultationsRelations = relations(consultations, ({ one }) => ({
-  user: one(userAccounts, {
+  user: one(users, {
     fields: [consultations.userId],
-    references: [userAccounts.id],
+    references: [users.id],
   }),
-  assignedMistri: one(mistriAccounts, {
+  mistri: one(users, {
+    fields: [consultations.mistriId],
+    references: [users.id],
+  }),
+  assignedTo: one(users, {
     fields: [consultations.assignedTo],
-    references: [mistriAccounts.id],
+    references: [users.id],
   }),
 }));
 
@@ -998,14 +797,11 @@ export const consultationsRelations = relations(consultations, ({ one }) => ({
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
-export type UserAccount = typeof userAccounts.$inferSelect;
-export type NewUserAccount = typeof userAccounts.$inferInsert;
-export type MistriAccount = typeof mistriAccounts.$inferSelect;
-export type NewMistriAccount = typeof mistriAccounts.$inferInsert;
+export type MistriProfile = typeof mistriProfiles.$inferSelect;
+export type EmployeeProfile = typeof employeeProfiles.$inferSelect;
 export type ServiceCategory = typeof serviceCategories.$inferSelect;
 export type ServiceSubCategory = typeof serviceSubCategories.$inferSelect;
 export type ServiceItem = typeof serviceItems.$inferSelect;
-export type MistriProfile = typeof mistriProfiles.$inferSelect;
 export type ServiceRequest = typeof serviceRequests.$inferSelect;
 export type Order = typeof orders.$inferSelect;
 export type NewOrder = typeof orders.$inferInsert;
