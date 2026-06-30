@@ -22,7 +22,8 @@ import { cacheService } from "./services/cacheService";
 import routes from "./routes";
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
+const host = process.env.NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0';
 
 // Trust proxy (for rate limiting behind nginx)
 app.set('trust proxy', process.env.NODE_ENV === 'production' ? 1 : 0);
@@ -67,31 +68,84 @@ const ipKeyGenerator = (ip: string): string => {
   return ip;
 };
 
-// CORS configuration
+// ============================================
+// ✅ FIXED: CORS CONFIGURATION
+// ============================================
+
 const normalizeOrigin = (value: string) => value.trim().replace(/\/+$/, '').toLowerCase();
+
+// Build allowed origins from environment
 const allowedOrigins = new Set(
   (process.env.ALLOWED_ORIGINS?.split(',') || [])
     .map((origin: string) => normalizeOrigin(origin))
     .filter(Boolean)
 );
 
+// ✅ Add development origins
+if (process.env.NODE_ENV !== 'production') {
+  allowedOrigins.add('http://localhost:3000');
+  allowedOrigins.add('http://localhost:3001');
+  allowedOrigins.add('http://localhost:3002');
+  allowedOrigins.add('http://localhost:3003');
+  allowedOrigins.add('http://127.0.0.1:3000');
+  allowedOrigins.add('http://127.0.0.1:3001');
+  // ✅ Allow any ngrok URL pattern
+  allowedOrigins.add('https://*.ngrok-free.dev');
+  allowedOrigins.add('https://*.ngrok.io');
+}
+
+console.log('✅ Allowed CORS origins:', Array.from(allowedOrigins));
+
 app.use(cors({
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    if (!origin) return callback(null, true);
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    // ✅ Development: allow all origins
     if (process.env.NODE_ENV !== 'production') {
+      // Check if origin is localhost or ngrok
+      const isLocalhost = origin.includes('localhost') || origin.includes('127.0.0.1');
+      const isNgrok = origin.includes('ngrok-free.dev') || origin.includes('ngrok.io');
+      
+      if (isLocalhost || isNgrok) {
+        console.log(`✅ CORS allowed (dev): ${origin}`);
+        return callback(null, true);
+      }
+      
+      // Check against allowed origins
+      const normalized = normalizeOrigin(origin);
+      if (allowedOrigins.has(normalized)) {
+        console.log(`✅ CORS allowed (config): ${origin}`);
+        return callback(null, true);
+      }
+      
+      // ⚠️ In development, allow all for debugging (but log it)
+      console.log(`⚠️ CORS allowing (dev fallback): ${origin}`);
       return callback(null, true);
     }
-    if (allowedOrigins.has(origin)) {
+
+    // Production: strict checking
+    const normalized = normalizeOrigin(origin);
+    if (allowedOrigins.has(normalized)) {
       return callback(null, true);
     }
+
+    console.warn(`❌ CORS blocked: ${origin}`);
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+  exposedHeaders: ['Content-Length', 'X-Requested-With'],
+  maxAge: 86400, // Cache preflight for 24 hours
 }));
 
-// Rate limiting
+// ============================================
+// RATE LIMITING
+// ============================================
+
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === 'production' ? 100 : 1000,
@@ -240,8 +294,9 @@ const gracefulShutdown = async (signal: string) => {
 // START SERVER
 // ============================================
 
-server = app.listen(Number(port), process.env.NODE_ENV === 'production' ? "127.0.0.1" : "0.0.0.0", () => {
+server = app.listen(Number(port), host, () => {
   logger.info(`Server is running on port ${port} in ${process.env.NODE_ENV || 'development'} mode`);
+  logger.info(`Host: ${host}`);
   
   // Print network interfaces
   const nets = networkInterfaces();

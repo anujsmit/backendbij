@@ -5,7 +5,7 @@ import {
     registerMistri,
     loginMistri,
     verifyMistriOtp,
-    resendMistriOtp,  // ✅ Import the new function
+    resendMistriOtp,
     mistriForgotPassword,
     verifyMistriForgotOtp,
     resetMistriPassword,

@@ -27,7 +27,11 @@ const router = Router();
  */
 router.post("/login", adminLogin);
 
-// ✅ ADD THIS ROUTE - alias for /login to match frontend
+/**
+ * POST /api/admin/auth/login-with-password
+ * Alias for /login to match frontend
+ * Body: { phone, password }
+ */
 router.post("/login-with-password", adminLogin);
 
 /**
